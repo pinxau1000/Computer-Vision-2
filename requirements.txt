@@ -1,0 +1,4 @@
+matplotlib>=3.3
+numpy>=1.19,<1.19.4
+opencv-contrib-python>=4.4.0
+pyrealsense2>=2.40.0
