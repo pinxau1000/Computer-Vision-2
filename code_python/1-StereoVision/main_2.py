@@ -7,6 +7,7 @@ from typing import Union
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 # %% ---------------------------------------------------------------------------
@@ -619,6 +620,37 @@ def load_image(file_path: str = None, colorConvCode: int = None):
         return _img, cv.cvtColor(_img, colorConvCode)
 
 
+def avg_std_welford(samples: np.ndarray, N: int,
+                    last_avg: np.ndarray, last_M2: np.ndarray):
+    avg = last_avg + (samples - last_avg) / N
+    M2 = last_M2 + (samples - last_avg) * (samples - avg)
+    std = M2 / N
+    return avg, std, M2, N
+
+
+def compute_error(orig: np.ndarray, test: np.ndarray, N: int,
+                  avg_orig: np.ndarray, M2_orig: np.ndarray,
+                  avg_test: np.ndarray, M2_test: np.ndarray):
+    avg_orig, std_orig, M2_orig, _ = avg_std_welford(samples=orig, N=N,
+                                                     last_avg=avg_orig,
+                                                     last_M2=M2_orig)
+
+    avg_test, std_test, M2_test, _ = avg_std_welford(samples=test, N=N,
+                                                     last_avg=avg_test,
+                                                     last_M2=M2_test)
+
+    return avg_orig, avg_test, std_orig, std_test, M2_orig, M2_test
+
+
+# https://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
+def zero_outliers(data, m=2.):
+    d = np.abs(data - np.median(data))
+    mdev = np.median(d)
+    s = d / mdev if mdev else 0.
+    data[s >= m] = 0
+    return data
+
+
 # ------------------------------------------------------------------------------
 #                                       Main
 # ------------------------------------------------------------------------------
@@ -660,13 +692,13 @@ colorizer = rs.colorizer()
 intrinsics, extrinsics = get_intrinsics_extrinsics(pipeline_rs=pipeline)
 
 # Obtain the depth scale
-depth_scale = get_depth_scale(pipeline_rs=pipeline)
-print("Depth Scale is [m/px_val]: ", depth_scale)
+rs_depth_scale = get_depth_scale(pipeline_rs=pipeline)
+print("Depth Scale is [m/px_val]: ", rs_depth_scale)
 
 # Distance between left and right IR cameras in meters. Cameras are
 # assumed to be parallel to each other. We are assuming no distortion for
 # all cameras
-baseline = 0.05  # extrinsics["Infrared 2 -> Infrared 1"][1][0]
+baseline = 0.05  # m
 
 # Creates windows to display the frames
 cv.namedWindow("IR Stream", cv.WINDOW_AUTOSIZE)
@@ -687,6 +719,17 @@ matcher = cv.StereoSGBM_create(minDisparity=_min_disp,
 # Instantiation of a Disparity Filter Object
 disp_filter = cv.ximgproc.createDisparityWLSFilter(matcher)
 
+# FLAG to enable the calculation of transform matrix on the first run
+first_run = True
+H1 = np.ones((3, 3))  # Prevent warning
+H2 = np.ones((3, 3))  # Prevent warning
+
+# Error metrics variables (Welford)
+count = 1
+avg_rs_depth = 0
+avg_my_depth = 0
+M2_rs_depth = 0
+M2_my_depth = 0
 while True:
     # Wait for new frames and grabs the frameset
     frameset = pipeline.wait_for_frames()
@@ -700,69 +743,76 @@ while True:
     # Render image in opencv window
     cv.imshow("IR Stream", np.hstack((left_ir, right_ir)))
 
-    # Get Depth Frames
-    rs_depth = np.asanyarray(
+    # Get Depth Frames with Color
+    rs_depth_color = np.asanyarray(
         colorizer.colorize(frameset.get_depth_frame()).get_data())
+    # Get Depth Frames without Color (Used for distance calculation)
+    rs_depth = np.asanyarray(frameset.get_depth_frame().get_data())
 
     # Render image in opencv window
-    cv.imshow("D435 Depth Stream", rs_depth)
+    cv.imshow("D435 Depth Stream", rs_depth_color)
 
-    # Get the descriptors and the keypoints using SIFT
-    kp1, desc1, \
-    kp2, desc2 = get_keypoints_and_descriptors(imageL=left_ir,
-                                               imageR=right_ir,
-                                               feature_desc=cv.SIFT_create())
+    if first_run:
+        # Get the descriptors and the keypoints using SIFT
+        kp1, desc1, \
+        kp2, desc2 = get_keypoints_and_descriptors(imageL=left_ir,
+                                                   imageR=right_ir,
+                                                   feature_desc=cv.SIFT_create())
 
-    # Compute the matching keypoints based on their descriptors
-    matches_all = get_matching_points(descriptorL=desc1,
-                                      descriptorR=desc2)
+        # Compute the matching keypoints based on their descriptors
+        matches_all = get_matching_points(descriptorL=desc1,
+                                          descriptorR=desc2)
 
-    # Apply Lowe's test to ensure valid matches only
-    matches_l, matches_r, matches_l2r, matches_r2l = lowe_ratio_test(
-        matches_list=matches_all,
-        keypointsL=kp1,
-        keypointsR=kp2,
-        K=0.8,
-        best_N=0.9)
+        # Apply Lowe's test to ensure valid matches only
+        matches_l, matches_r, matches_l2r, matches_r2l = lowe_ratio_test(
+            matches_list=matches_all,
+            keypointsL=kp1,
+            keypointsR=kp2,
+            K=0.8,
+            best_N=0.9)
 
-    """
-    # Generate and show the matches
-    matching_image = np.hstack((left_ir, right_ir))
-    matching_image = cv.drawMatches(img1=left_ir, keypoints1=kp1,
-     img2=right_ir,
-                                    keypoints2=kp2, matches1to2=matches_l2r,
-                                    outImg=matching_image, flags=2)
+        """
+        # Generate and show the matches
+        matching_image = np.hstack((left_ir, right_ir))
+        matching_image = cv.drawMatches(img1=left_ir, keypoints1=kp1,
+         img2=right_ir,
+                                        keypoints2=kp2, matches1to2=matches_l2r,
+                                        outImg=matching_image, flags=2)
+    
+        cv.imshow("Matching", matching_image)
+        # """
 
-    cv.imshow("Matching", matching_image)
-    # """
+        # Compute the fundamental matrix
+        fund_mat, inliers_l, inliers_r = get_fundamental_matrix(
+            matchesL=matches_l,
+            matchesR=matches_r)
 
-    # Compute the fundamental matrix
-    fund_mat, inliers_l, inliers_r = get_fundamental_matrix(matchesL=matches_l,
-                                                            matchesR=matches_r)
+        """
+        # Find homography matrix/transform matrix with image left as reference
+        H_2to1, _ = cv.findHomography(np.float64(inliers_r),
+                                      np.float64(inliers_l),
+                                      method=cv.RANSAC,
+                                      ransacReprojThreshold=3, confidence=0.99)
+    
+        # Rectify the right image
+        right_rect = get_rectified(img=right_ir, M_mat=H_2to1)
+        # """
 
-    """
-    # Find homography matrix/transform matrix with image left as reference
-    H_2to1, _ = cv.findHomography(np.float64(inliers_r),
-                                  np.float64(inliers_l),
-                                  method=cv.RANSAC,
-                                  ransacReprojThreshold=3, confidence=0.99)
+        # """
+        # Transform matrix to virtual common plane
+        H1, H2 = get_homography(match_pts1=inliers_l,
+                                match_pts2=inliers_r,
+                                fundamental_mat=fund_mat,
+                                img=left_ir)
 
-    # Rectify the right image
-    right_rect = get_rectified(img=right_ir, M_mat=H_2to1)
-    # """
-
-    # """
-    # Transform matrix to virtual common plane
-    H1, H2 = get_homography(match_pts1=inliers_l,
-                            match_pts2=inliers_r,
-                            fundamental_mat=fund_mat,
-                            img=left_ir)
-
-    # Rectify the right image
-    right_rect = get_rectified(img=right_ir, M_mat=H1)
+        # Keep the H1 and H2 from the first run for the next frames.
+        first_run = False
 
     # Rectify the left image
-    left_rect = get_rectified(img=right_ir, M_mat=H2)
+    left_rect = get_rectified(img=left_ir, M_mat=H1)
+
+    # Rectify the right image
+    right_rect = get_rectified(img=right_ir, M_mat=H2)
 
     cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
     # """
@@ -774,29 +824,68 @@ while True:
                                   disparity_filter=disp_filter,
                                   enhance_filtering=True)
 
-    # Compute the depth from disparity, focal length and baseline
-    depth = np.zeros(shape=left_ir.shape).astype(np.float64)
-    depth[disparity > 0] = (intrinsics.get('Depth').fx * baseline) / \
-                           (disparity[disparity > 0])
+    # Compute the depth from disparity, focal length(pixels) and baseline(m)
+    depth = np.zeros_like(disparity).astype(np.float64)
+    depth[disparity > 0] = (intrinsics.get('Infrared 1').fx * baseline) / \
+                           (0.1 * disparity[disparity > 0])
+
+    # Remove outliers
+    # _THRESHOLD_ = 0.25
+    # depth[depth > np.max(depth) * _THRESHOLD_] = np.max(depth) * _THRESHOLD_
+    depth = zero_outliers(data=depth, m=6)
+
+    # Show Depth Map (GRAY SCALE)
+    cv.imshow("My Depth Original", depth)
+
+    """
+    # DEBUG
+    _MAX = 1.5  # in m
+    depth[depth > _MAX] = _MAX
+
+    plt.boxplot(depth.ravel())
+    plt.show()
+    # """
 
     # Remaps the depth values to match a 255 color image.
-    """
-    # ORIGINAL
     depth_remap = np.interp(x=depth,
-                            xp=(np.min(depth), np.max(depth)),
-                            fp=(0, 255)).astype(np.uint8)
-    # """
-    depth_remap = np.interp(x=depth,
-                            xp=(0, 3),
+                            xp=(0, np.max(depth)),
                             fp=(255, 0)).astype(np.uint8)
 
+    # Use median blur filtering to smooth the image (For display proposes only)
+    depth_filtered = cv.medianBlur(depth_remap, 5)
+
     # Apply color map to the depth image
-    depth_color = cv.applyColorMap(src=depth_remap,
+    depth_color = cv.applyColorMap(src=np.uint8(depth_filtered),
                                    colormap=cv.COLORMAP_JET)
 
     # Show the depth image
     cv.imshow("My Depth Map", depth_color)
 
+    # Computes AVG and STD for quality metrics
+    rs_depth_scaled = rs_depth * rs_depth_scale
+    avg_rs_depth, avg_my_depth, std_rs_depth, std_my_depth, M2_rs_depth, M2_my_depth = compute_error(
+        orig=rs_depth_scaled,
+        test=depth,
+        N=count,
+        avg_orig=avg_rs_depth,
+        avg_test=avg_my_depth,
+        M2_orig=M2_rs_depth,
+        M2_test=M2_my_depth
+    )
+
+    diff = (avg_rs_depth[avg_rs_depth > 0 & avg_my_depth > 0] -
+            avg_my_depth[avg_rs_depth > 0 & avg_my_depth > 0])
+    cv.imshow("Avg Diff", diff)
+    cv.imshow("Std", np.hstack((std_rs_depth, std_my_depth)))
+    print(f"Realsense\n- AVG: {str(np.average(avg_rs_depth))};\tSTD:"
+          f" {str(np.average(std_rs_depth))}")
+    print(f"My\n-AVG {str(np.average(avg_my_depth))};\tSTD:"
+          f" {str(np.average(std_my_depth))}")
+
+    # Increment (Used for Welford metrics)
+    count += 1
+
+    # Read key and waits 1ms
     key = cv.waitKey(1)
     # if pressed ESCAPE exit program
     if key == 27:
