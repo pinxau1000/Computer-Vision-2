@@ -7,7 +7,6 @@ from typing import Union
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 # %% ---------------------------------------------------------------------------
@@ -620,150 +619,6 @@ def load_image(file_path: str = None, colorConvCode: int = None):
         return _img, cv.cvtColor(_img, colorConvCode)
 
 
-def avg_std_welford(sample: np.ndarray, _N: int,
-                    last_avg: np.ndarray, last_M2: np.ndarray):
-    """
-    Computes the average and standard deviation N samples, including the
-    actual sample.
-
-    @param sample: The current sample to be evaluated
-    @type sample: np.ndarray
-    @param _N: The number of current sample
-    @type _N: int
-    @param last_avg: last average
-    @type last_avg: np.ndarray
-    @param last_M2: last M2 param
-    @type last_M2: np.ndarray
-    @return: average, standard deviation, M2 and N
-    @rtype: np.ndarray, np.ndarray, np.ndarray, int
-    """
-
-    _avg = last_avg + (sample - last_avg) / _N
-    _M2 = last_M2 + (sample - last_avg) * (sample - _avg)
-    _std = _M2 / _N
-
-    return _avg, _std, _M2, _N
-
-
-def compute_error(orig: np.ndarray, test: np.ndarray, _N: int,
-                  _avg: np.ndarray, _M2: np.ndarray):
-    """
-    Computes the error between the original and test array using the absolute
-    difference between pixels. Welfoard algoritm is used.
-
-    @param orig: Original samples
-    @type orig: np.ndarray
-    @param test: Test samples
-    @type test: np.ndarray
-    @param _N: N iteration
-    @type _N: int
-    @param _avg: last average
-    @type _avg: np.ndarray
-    @param _M2: last M2
-    @type _M2: np.ndarray
-    @return: np.ndarray, np.ndarray, np.ndarray
-    @rtype: average, standard deviation, M2
-    """
-    # Creates a mark with the same shape of original image/array
-    _mask = np.zeros_like(orig)
-
-    # Sets the mask to 1 only when orig and test are bigger than 0
-    _abs_dif = np.zeros_like(orig)
-    np.putmask(_abs_dif, (orig > 0) & (test > 0), np.abs(orig - test))
-
-    # Applies Welford algoritm to compute avg and std (M2 is also returned)
-    return avg_std_welford(sample=_abs_dif, _N=_N,
-                           last_avg=_avg,
-                           last_M2=_M2)[:3]
-
-
-def zero_outliers(data: np.ndarray, m: float = 2.):
-    """
-    Sets the outliers to 0 on an numpy array. Based on:
-    https://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
-    """
-    d = np.abs(data - np.median(data))
-    mdev = np.median(d)
-    s = d / mdev if mdev else 0.
-    data[s >= m] = 0
-    return data
-
-
-def draw_error(current: np.ndarray, data: list,
-               wh: int, sc: float, _data_max: float, _data_min: float):
-    """
-    Draws an "oscilloscope" style graph with the data. Because the graph is
-    active the current "image" needs to be passed so the next one can be
-    generated.
-
-    example:
-    # Draws a graph showing the average and std
-    error_graph, _error_graph_max, error_graph_min = draw_error(
-        current=error_graph,
-        data=[global_avg, global_std],
-        _data_max=_error_graph_max,
-        _data_min=_error_graph_min,
-        wh=win_h,
-        sc=scale
-    )
-
-    @param current: Current image. initialize it as a null array and then
-    update it with the return of this function.
-    @type current: np.ndarray
-    @param data: The data to be plotted. Always pass a list, even with only
-    one element.
-    @type data: list
-    @param wh: The graph window height or the height of the current image.
-    @type wh: int
-    @param sc: A scale factor to apply when the data to be shows is too
-    small. Keep in mind that the data will be rounded and assigned to a row
-    index based on it's value.
-    @type sc: float
-    @param _data_max: Maximum value of the data. Needed for updating the window
-    if the data goes above the window height. This value should be
-    initialized as 0 and updated on every iteration.
-    @type _data_max: float
-    @param _data_min: Minimum value of the data. Needed for updating the window
-    if the data goes below the window height. This value should be
-    initialized as 0 and updated on every iteration.
-    @type _data_min: float
-    @return: The image to be show (cv.imshow), the new data_max and data_min
-    @rtype: np.ndarray, float, float
-    """
-    COLORS = [
-        (255, 0, 255),
-        (0, 255, 255),
-        (0, 0, 255),
-        (0, 255, 0),
-        (255, 0, 0),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 0),
-    ]
-
-    # Shift the data on the error window
-    _graph = np.roll(current, -1, axis=1)
-
-    if np.max(data) > _data_max:
-        _data_max = np.max(data)
-        _shift = np.ceil(np.abs(_data_max - wh)).astype(np.int)
-        _graph = np.roll(_graph, _shift, axis=0)
-    if np.min(data) < _data_min:
-        _data_min = np.min(data)
-        _shift = np.ceil(np.abs(_data_min - wh)).astype(np.int)
-        _graph = np.roll(_graph, -_shift, axis=0)
-
-    # Sets the last column to zero to store new data
-    _graph[:, -1] = 0
-
-    # Stores new data. The index of the row is proportional to the value of
-    # the data. Color is BGR so: AVG is Pink and STD is Yellow
-    for i, d in enumerate(data):
-        _graph[wh - 1 - np.rint(d * sc).astype(np.int), -1] = COLORS[i]
-
-    return _graph, _error_graph_max, _error_graph_min
-
-
 # ------------------------------------------------------------------------------
 #                                       Main
 # ------------------------------------------------------------------------------
@@ -805,58 +660,33 @@ colorizer = rs.colorizer()
 intrinsics, extrinsics = get_intrinsics_extrinsics(pipeline_rs=pipeline)
 
 # Obtain the depth scale
-rs_depth_scale = get_depth_scale(pipeline_rs=pipeline)
-print("Depth Scale is [m/px_val]: ", rs_depth_scale)
+depth_scale = get_depth_scale(pipeline_rs=pipeline)
+print("Depth Scale is [m/px_val]: ", depth_scale)
 
 # Distance between left and right IR cameras in meters. Cameras are
 # assumed to be parallel to each other. We are assuming no distortion for
 # all cameras
-baseline = 0.05  # m
+baseline = 0.05  # extrinsics["Infrared 2 -> Infrared 1"][1][0]
 
 # Creates windows to display the frames
+cv.namedWindow("IR Stream", cv.WINDOW_AUTOSIZE)
 cv.namedWindow("D435 Depth Stream", cv.WINDOW_AUTOSIZE)
 cv.namedWindow("My Depth Map", cv.WINDOW_AUTOSIZE)
 
 # Instantiation of a stereo matcher object. We try to refine the parameters
 # to achieve best results.
-_min_disp = -8
-_max_disp = 8
+_min_disp = 0
+_max_disp = 4
 # Number of different disparities (Like Quantization)
 _num_disp = np.int32(16 * np.round(_max_disp - _min_disp))
 # Block size 9 because we don't need the details
 matcher = cv.StereoSGBM_create(minDisparity=_min_disp,
                                numDisparities=_num_disp,
-                               blockSize=5)
+                               blockSize=11)
 
 # Instantiation of a Disparity Filter Object
 disp_filter = cv.ximgproc.createDisparityWLSFilter(matcher)
 
-# FLAG to enable the calculation of transform matrix on the first run
-first_run = True
-H1 = np.ones((3, 3))  # Prevent warning
-H2 = np.ones((3, 3))  # Prevent warning
-
-# Error metrics variables (Welford)
-count = 1
-avg = 0
-M2 = 0
-
-# Creates the array to displays the avg error and std
-win_w = 200
-win_h = 200
-scale = 200.
-error_graph = np.zeros((win_h, win_w, 3))
-
-# Creates the window to display the error and std
-cv.namedWindow("ERROR - AVG & STD", cv.WINDOW_AUTOSIZE + cv.WINDOW_KEEPRATIO)
-
-# Don't touch! These vars will be updated as the program run we are just
-# initialing it. These defines the current maximum and minimum of the data to
-# be show.
-_error_graph_max = 0
-_error_graph_min = 0
-
-# Main cycle/loop
 while True:
     # Wait for new frames and grabs the frameset
     frameset = pipeline.wait_for_frames()
@@ -868,161 +698,81 @@ while True:
     right_ir = np.asanyarray(frameset.get_infrared_frame(2).get_data())
 
     # Render image in opencv window
-    # cv.imshow("IR Stream", np.hstack((left_ir, right_ir)))
+    cv.imshow("IR Stream", np.hstack((left_ir, right_ir)))
 
-    # Get Depth Frames with Color
-    rs_depth_color = np.asanyarray(
+    # Get Depth Frames
+    rs_depth = np.asanyarray(
         colorizer.colorize(frameset.get_depth_frame()).get_data())
-    # Get Depth Frames without Color (Used for distance calculation)
-    rs_depth = np.asanyarray(frameset.get_depth_frame().get_data())
 
     # Render image in opencv window
-    cv.imshow("D435 Depth Stream", rs_depth_color)
+    cv.imshow("D435 Depth Stream", rs_depth)
 
-    if first_run:
-        # Get the descriptors and the keypoints using SIFT
-        kp1, desc1, \
-        kp2, desc2 = get_keypoints_and_descriptors(imageL=left_ir,
-                                                   imageR=right_ir,
-                                                   feature_desc=cv.SIFT_create())
+    # Get the descriptors and the keypoints using SIFT
+    kp1, desc1, \
+    kp2, desc2 = get_keypoints_and_descriptors(imageL=left_ir,
+                                               imageR=right_ir,
+                                               feature_desc=cv.SIFT_create())
 
-        # Compute the matching keypoints based on their descriptors
-        matches_all = get_matching_points(descriptorL=desc1,
-                                          descriptorR=desc2)
+    # Compute the matching keypoints based on their descriptors
+    matches_all = get_matching_points(descriptorL=desc1,
+                                      descriptorR=desc2)
 
-        # Apply Lowe's test to ensure valid matches only
-        matches_l, matches_r, matches_l2r, matches_r2l = lowe_ratio_test(
-            matches_list=matches_all,
-            keypointsL=kp1,
-            keypointsR=kp2,
-            K=0.8,
-            best_N=0.9)
+    # Apply Lowe's test to ensure valid matches only
+    matches_l, matches_r, matches_l2r, matches_r2l = lowe_ratio_test(
+        matches_list=matches_all,
+        keypointsL=kp1,
+        keypointsR=kp2,
+        K=0.8,
+        best_N=0.9)
 
-        """
-        # Generate and show the matches
-        matching_image = np.hstack((left_ir, right_ir))
-        matching_image = cv.drawMatches(img1=left_ir, keypoints1=kp1,
-         img2=right_ir,
-                                        keypoints2=kp2, matches1to2=matches_l2r,
-                                        outImg=matching_image, flags=2)
-    
-        cv.imshow("Matching", matching_image)
-        # """
+    """
+    # Generate and show the matches
+    matching_image = np.hstack((left_ir, right_ir))
+    matching_image = cv.drawMatches(img1=left_ir, keypoints1=kp1,
+     img2=right_ir,
+                                    keypoints2=kp2, matches1to2=matches_l2r,
+                                    outImg=matching_image, flags=2)
 
-        # Compute the fundamental matrix
-        fund_mat, inliers_l, inliers_r = get_fundamental_matrix(
-            matchesL=matches_l,
-            matchesR=matches_r)
+    cv.imshow("Matching", matching_image)
+    # """
 
-        """
-        # Find homography matrix/transform matrix with image left as reference
-        H_2to1, _ = cv.findHomography(np.float64(inliers_r),
-                                      np.float64(inliers_l),
-                                      method=cv.RANSAC,
-                                      ransacReprojThreshold=3, confidence=0.99)
-    
-        # Rectify the right image
-        right_rect = get_rectified(img=right_ir, M_mat=H_2to1)
-        # """
+    # Compute the fundamental matrix
+    fund_mat, inliers_l, inliers_r = get_fundamental_matrix(matchesL=matches_l,
+                                                            matchesR=matches_r)
 
-        # Transform matrix to virtual common plane
-        H1, H2 = get_homography(match_pts1=inliers_l,
-                                match_pts2=inliers_r,
-                                fundamental_mat=fund_mat,
-                                img=left_ir)
-
-        # Keep the H1 and H2 from the first run for the next frames.
-        first_run = False
-
-    # Rectify the left image
-    left_rect = get_rectified(img=left_ir, M_mat=H1)
+    # Find homography matrix/transform matrix with image left as reference
+    H_2to1, _ = cv.findHomography(np.float64(inliers_r),
+                                  np.float64(inliers_l),
+                                  method=cv.RANSAC,
+                                  ransacReprojThreshold=3, confidence=0.99)
 
     # Rectify the right image
-    right_rect = get_rectified(img=right_ir, M_mat=H2)
-
-    # Show rectified images
-    # cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
+    right_rect = get_rectified(img=right_ir, M_mat=H_2to1)
 
     # Get the disparity map from the left and rectified right image
-    disparity = get_disparity_map(imageL=left_rect,
+    disparity = get_disparity_map(imageL=left_ir,
                                   imageR=right_rect,
                                   disparity_matcher=matcher,
                                   disparity_filter=disp_filter,
                                   enhance_filtering=True)
 
-    # Compute the depth from disparity, focal length(pixels) and baseline(m)
-    depth = np.zeros_like(disparity).astype(np.float64)
-    depth[disparity > 0] = (intrinsics.get('Infrared 1').fx * baseline) / \
-                           (0.1 * disparity[disparity > 0])
-
-    """
-    # DEBUG (USED TO ESTIMATE A _THRESHOLD_)
-    _MAX = 1.5  # in m
-    depth[depth > _MAX] = _MAX
-
-    plt.boxplot(depth.ravel())
-    plt.show()
-    
-    # Implemented an alternative, see below, zero_outliers()
-    _THRESHOLD_ = 0.25
-    depth[depth > np.max(depth) * _THRESHOLD_] = np.max(depth) * _THRESHOLD_
-    # """
-
-    # Remove outliers
-    depth = zero_outliers(data=depth, m=6)
-
-    # Show Depth Map (GRAY SCALE)
-    # cv.imshow("My Depth Original", depth)
+    # Compute the depth from disparity, focal length and baseline
+    depth = np.zeros(shape=left_ir.shape).astype(np.float64)
+    depth[disparity > 0] = (intrinsics.get('Depth').fx * baseline) / \
+                           (disparity[disparity > 0])
 
     # Remaps the depth values to match a 255 color image.
     depth_remap = np.interp(x=depth,
-                            xp=(0, np.max(depth)),
+                            xp=(np.min(depth), np.max(depth)),
                             fp=(255, 0)).astype(np.uint8)
 
-    # Use median blur filtering to smooth the image (For display proposes only)
-    depth_filtered = cv.medianBlur(depth_remap, 5)
-
     # Apply color map to the depth image
-    depth_color = cv.applyColorMap(src=np.uint8(depth_filtered),
+    depth_color = cv.applyColorMap(src=depth_remap,
                                    colormap=cv.COLORMAP_JET)
 
     # Show the depth image
     cv.imshow("My Depth Map", depth_color)
 
-    # Computes AVG and STD for quality metrics
-    rs_depth_scaled = rs_depth * rs_depth_scale
-    avg, std, M2 = compute_error(
-        orig=rs_depth_scaled,
-        test=depth,
-        _N=count,
-        _avg=avg,
-        _M2=M2
-    )
-
-    # Gets average of all pixels
-    global_avg = np.average(avg)
-
-    # Gets the std of all pixels
-    global_std = np.average(std)
-
-    # Prints the AVG of the absolute difference of all pixels and the STD
-    print(f"AVG: {str(global_avg)};\tSTD: {str(global_std)}")
-
-    # Draws a graph showing the average and std
-    error_graph, _error_graph_max, error_graph_min = draw_error(
-        current=error_graph,
-        data=[global_avg, global_std],
-        _data_max=_error_graph_max,
-        _data_min=_error_graph_min,
-        wh=win_h,
-        sc=scale
-    )
-    cv.imshow("ERROR - AVG & STD", error_graph)
-
-    # Increment (Used for Welford metrics)
-    count += 1
-
-    # Read key and waits 1ms
     key = cv.waitKey(1)
     # if pressed ESCAPE exit program
     if key == 27:

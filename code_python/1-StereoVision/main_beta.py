@@ -1,4 +1,4 @@
-# ------------------------------------------------------------------------------
+# %% ---------------------------------------------------------------------------
 #                                   Imports
 # ------------------------------------------------------------------------------
 import os
@@ -7,9 +7,10 @@ from typing import Union
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
 import numpy as np
+import matplotlib.pyplot as plt
 
 
-# ------------------------------------------------------------------------------
+# %% ---------------------------------------------------------------------------
 #                               Real Sense Functions
 # ------------------------------------------------------------------------------
 def rs_config_color_pipeline(config_rs: rs.config,
@@ -913,6 +914,17 @@ while True:
             matchesL=matches_l,
             matchesR=matches_r)
 
+        """
+        # Find homography matrix/transform matrix with image left as reference
+        H_2to1, _ = cv.findHomography(np.float64(inliers_r),
+                                      np.float64(inliers_l),
+                                      method=cv.RANSAC,
+                                      ransacReprojThreshold=3, confidence=0.99)
+    
+        # Rectify the right image
+        right_rect = get_rectified(img=right_ir, M_mat=H_2to1)
+        # """
+
         # Transform matrix to virtual common plane
         H1, H2 = get_homography(match_pts1=inliers_l,
                                 match_pts2=inliers_r,
@@ -943,8 +955,24 @@ while True:
     depth[disparity > 0] = (intrinsics.get('Infrared 1').fx * baseline) / \
                            (0.1 * disparity[disparity > 0])
 
+    """
+    # DEBUG (USED TO ESTIMATE A _THRESHOLD_)
+    _MAX = 1.5  # in m
+    depth[depth > _MAX] = _MAX
+
+    plt.boxplot(depth.ravel())
+    plt.show()
+    
+    # Implemented an alternative, see below, zero_outliers()
+    _THRESHOLD_ = 0.25
+    depth[depth > np.max(depth) * _THRESHOLD_] = np.max(depth) * _THRESHOLD_
+    # """
+
     # Remove outliers
     depth = zero_outliers(data=depth, m=6)
+
+    # Show Depth Map (GRAY SCALE)
+    # cv.imshow("My Depth Original", depth)
 
     # Remaps the depth values to match a 255 color image.
     depth_remap = np.interp(x=depth,
