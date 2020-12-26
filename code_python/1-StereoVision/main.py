@@ -425,7 +425,7 @@ def lowe_ratio_test(matches_list: list, keypointsL: list, keypointsR: list,
 
 
 def get_fundamental_matrix(matchesL: list, matchesR: list,
-                           search_method: int = cv.RANSAC):
+                           search_method: int = cv.FM_RANSAC):
     """
     Gets the fundamental matrix from a given matches points.
 
@@ -503,7 +503,8 @@ def get_homography(match_pts1: list, match_pts2: list,
     if size is not None:
         _size = size
 
-    # return H1 and H2
+    # Compute output rectification homography matrix for the first image and
+    # second image and return H1 and H2.
     return cv.stereoRectifyUncalibrated(points1=np.float32(match_pts1),
                                         points2=np.float32(match_pts2),
                                         F=fundamental_mat,
@@ -919,10 +920,10 @@ while True:
         # Generate and show the matches
         matching_image = np.hstack((left_ir, right_ir))
         matching_image = cv.drawMatches(img1=left_ir, keypoints1=kp1,
-         img2=right_ir,
+                                        img2=right_ir,
                                         keypoints2=kp2, matches1to2=matches_l2r,
                                         outImg=matching_image, flags=2)
-    
+
         cv.imshow("Matching", matching_image)
         # """
 
