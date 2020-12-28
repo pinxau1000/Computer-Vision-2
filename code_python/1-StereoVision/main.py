@@ -759,7 +759,9 @@ def onMouseClick(event, x, y, flags, userdata):
     if event != cv.EVENT_LBUTTONDOWN:
         return
 
-    print(f"D435: {rs_depth_scaled[x, y]}\t-\tMy: {depth[x, y]}")
+    print(f"\033[92m"
+          f"D435: {rs_depth_scaled[x, y]}\t-\tMy: {depth[x, y]}"
+          f"\x1b[0m")
 # endregion
 
 
@@ -970,7 +972,7 @@ while True:
     global_std = np.average(std)
 
     # Prints the AVG of the absolute difference of all pixels and the STD
-    print(f"AVG: {str(global_avg)};\tSTD: {str(global_std)}")
+    print(f"AVG: {str(global_avg)};\t-\tSTD: {str(global_std)}")
 
     # Draws a graph showing the average and std
     error_graph, _error_graph_max, error_graph_min = draw_error(
