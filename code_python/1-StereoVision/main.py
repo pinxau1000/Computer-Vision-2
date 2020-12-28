@@ -751,6 +751,15 @@ def draw_error(current: np.ndarray, data: list,
     return _graph, _data_max, _data_min
 
 
+def onMouseClick(event, x, y, flags, userdata):
+    """
+    Callback in order to print current depth of D435 and the computed depth.
+    @see: https://docs.opencv.org/4.4.0/d7/dfc/group__highgui.html#gab7aed186e151d5222ef97192912127a4
+    """
+    if event != cv.EVENT_LBUTTONDOWN:
+        return
+
+    print(f"D435: {rs_depth_scaled[x, y]}\t-\tMy: {depth[x, y]}")
 # endregion
 
 
@@ -804,19 +813,16 @@ print("Depth Scale is [m/px_val]: ", rs_depth_scale)
 baseline = 0.05  # m
 
 # Creates windows to display the frames
-cv.namedWindow("D435 Depth Stream", cv.WINDOW_AUTOSIZE)
+cv.namedWindow("D435 Depth Map", cv.WINDOW_AUTOSIZE)
 cv.namedWindow("My Depth Map", cv.WINDOW_AUTOSIZE)
 
+# Creates callbacks to print the depth to console
+cv.setMouseCallback("D435 Depth Map", onMouseClick)
+cv.setMouseCallback("My Depth Map", onMouseClick)
+
 # Instantiation of a stereo matcher object. We try to refine the parameters
-# to achieve best results.
-_min_disp = -8
-_max_disp = 8
-# Number of different disparities (Like Quantization)
-_num_disp = np.int32(16 * np.round(_max_disp - _min_disp))
-# Block size 9 because we don't need the details
-matcher = cv.StereoSGBM_create(minDisparity=_min_disp,
-                               numDisparities=_num_disp,
-                               blockSize=5)
+# to achieve best results, but we choose to use the defaults of StereoBM.
+matcher = cv.StereoBM_create()
 
 # Instantiation of a Disparity Filter Object
 disp_filter = cv.ximgproc.createDisparityWLSFilter(matcher)
@@ -867,7 +873,7 @@ while True:
     rs_depth = np.asanyarray(frameset.get_depth_frame().get_data())
 
     # Render image in opencv window
-    cv.imshow("D435 Depth Stream", rs_depth_color)
+    cv.imshow("D435 Depth Map", rs_depth_color)
 
     if first_run:
         # Get the descriptors and the keypoints using SIFT
@@ -922,7 +928,7 @@ while True:
     right_rect = get_rectified(img=right_ir, M_mat=H2)
 
     # Show rectified images
-    cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
+    # cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
 
     # Get the disparity map from the left and rectified right image
     disparity = get_disparity_map(imageL=left_rect,
@@ -935,19 +941,13 @@ while True:
     depth[disparity > 0] = (intrinsics.get('Infrared 1').fx * baseline) / \
                            (0.1 * disparity[disparity > 0])
 
-    # Remove outliers
-    depth = zero_outliers(data=depth, m=6)
-
     # Remaps the depth values to match a 255 color image.
     depth_remap = np.interp(x=depth,
                             xp=(0, np.max(depth)),
                             fp=(255, 0)).astype(np.uint8)
 
-    # Use median blur filtering to smooth the image (For display proposes only)
-    depth_filtered = cv.medianBlur(depth_remap, 5)
-
     # Apply color map to the depth image
-    depth_color = cv.applyColorMap(src=np.uint8(depth_filtered),
+    depth_color = cv.applyColorMap(src=np.uint8(depth_remap),
                                    colormap=cv.COLORMAP_JET)
 
     # Show the depth image
