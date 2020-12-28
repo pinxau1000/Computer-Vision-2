@@ -414,7 +414,7 @@ def lowe_ratio_test(matches_list: list, keypointsL: list, keypointsR: list,
         best_N = int(np.rint(best_N * len(_matchesL)))
 
         return _matchesL[:best_N], _matchesR[:best_N], \
-               _matches1to2[:best_N], _matches2to1[:best_N]
+            _matches1to2[:best_N], _matches2to1[:best_N]
 
     if type(best_N) is int:
         assert len(_matchesL) >= best_N, \
@@ -452,7 +452,8 @@ def get_fundamental_matrix(matchesL: list, matchesR: list,
                                                   points2=np.float64(matchesR),
                                                   method=search_method,
                                                   ransacReprojThreshold=3,
-                                                  confidence=0.99)
+                                                  confidence=0.99,
+                                                  maxIters=2000)  # Default
 
     # Ravel flattens the mask array. We select only the inliers (where the
     # mask is 1) as matching points!
@@ -543,8 +544,7 @@ def get_rectified(img: np.ndarray, M_mat: np.ndarray,
 
 def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
                       disparity_matcher: cv.StereoMatcher = None,
-                      disparity_filter: cv.ximgproc_DisparityFilter = None,
-                      enhance_filtering: bool = False):
+                      disparity_filter: cv.ximgproc_DisparityFilter = None):
     """
     Returns the disparity map based on image 1 and image 2.
 
@@ -563,39 +563,41 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
     @type disparity_matcher: cv.StereoMatcher
     @param disparity_filter: An instance of a disparity filter
     @type disparity_filter: cv.ximgproc.DisparityFilter
-    @param enhance_filtering: Enhance the filtering process by taking into
-    account the second image.
-    @type enhance_filtering: bool
     @return: the disparity map of the stereo image pair provided by
     cv.StereoMatcher.compute method.
     @rtype: np.ndarray
     """
     assert isinstance(disparity_filter, cv.ximgproc_DisparityFilter) or \
            disparity_filter is None, \
-        "Disparity Filter must be an instance of cv.ximgproc_DisparityFilter!"
+           "Disparity Filter must be an instance of " \
+           "cv.ximgproc_DisparityFilter or None!"
 
     if disparity_matcher is None:
+        # Default disparity matcher if None is passed
         disparity_matcher = cv.StereoBM_create(numDisparities=64, blockSize=9)
 
     assert isinstance(disparity_matcher, cv.StereoMatcher), \
         "Matcher object must be an instance of cv.StereoMatcher!"
 
-    matcher_img2 = cv.ximgproc.createRightMatcher(disparity_matcher)
+    # computes the disparity based on left image and right image
+    disparity_imgL = disparity_matcher.compute(left=imageL, right=imageR)
 
-    disparity_img1 = disparity_matcher.compute(left=imageL, right=imageR)
+    if isinstance(disparity_filter, cv.ximgproc_DisparityFilter):
+        # Creates the right matcher from the left matcher
+        disparity_matcher_R = \
+            cv.ximgproc.createRightMatcher(disparity_matcher)
 
-    if type(disparity_filter) is cv.ximgproc_DisparityFilter:
-        if enhance_filtering:
-            disparity_img2 = matcher_img2.compute(left=imageR, right=imageL)
-            return disparity_filter.filter(disparity_map_left=disparity_img1,
-                                           left_view=imageL,
-                                           disparity_map_right=disparity_img2,
-                                           right_view=imageR)
-        else:
-            return disparity_filter.filter(disparity_map_left=disparity_img1,
-                                           left_view=imageL)
+        # Computes disparity from right to left
+        disparity_imgR = disparity_matcher_R.compute(left=imageR,
+                                                     right=imageL)
 
-    return disparity_img1
+        # Filters and returns disparity
+        return disparity_filter.filter(disparity_map_left=disparity_imgL,
+                                       left_view=imageL,
+                                       disparity_map_right=disparity_imgR,
+                                       right_view=imageR)
+
+    return disparity_imgL
 
 
 # endregion
@@ -605,34 +607,6 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
 # ------------------------------------------------------------------------------
 #                               Utility Functions
 # ------------------------------------------------------------------------------
-def load_image(file_path: str = None, colorConvCode: int = None):
-    """
-    Loads an image with the path fpath. If color code is provided a color
-    conversion is applied.
-
-    example:
-    image = load_image(file_path, cv.COLOR_RGB2BGR)
-
-    @param file_path: Path of image to load
-    @type file_path: str
-    @param colorConvCode: Type of conversion of code to apply to image. None
-    if no conversion is applied
-    @type colorConvCode: int (based on enum cv.ColorConversionCodes)
-    @return: image as numpy array
-    @rtype: np.ndarray
-    """
-
-    assert file_path is not None, "path must not be None"
-    assert os.path.exists(file_path), f"{file_path} didn't exist"
-
-    _img = cv.imread(file_path)
-
-    if colorConvCode is None:
-        return _img
-    else:
-        return _img, cv.cvtColor(_img, colorConvCode)
-
-
 def avg_std_welford(sample: np.ndarray, _N: int,
                     last_avg: np.ndarray, last_M2: np.ndarray):
     """
@@ -948,14 +922,13 @@ while True:
     right_rect = get_rectified(img=right_ir, M_mat=H2)
 
     # Show rectified images
-    # cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
+    cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
 
     # Get the disparity map from the left and rectified right image
     disparity = get_disparity_map(imageL=left_rect,
                                   imageR=right_rect,
                                   disparity_matcher=matcher,
-                                  disparity_filter=disp_filter,
-                                  enhance_filtering=True)
+                                  disparity_filter=disp_filter)
 
     # Compute the depth from disparity, focal length(pixels) and baseline(m)
     depth = np.zeros_like(disparity).astype(np.float64)
