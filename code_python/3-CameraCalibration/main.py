@@ -1,9 +1,8 @@
-# %% ---------------------------------------------------------------------------
+# region Imports
+# ------------------------------------------------------------------------------
 #                                   Imports
 # ------------------------------------------------------------------------------
 import os
-import time
-from ctypes.wintypes import RGB
 from typing import Union
 
 from pyrealsense2 import pyrealsense2 as rs
@@ -11,7 +10,11 @@ from cv2 import cv2 as cv
 import numpy as np
 
 
-# %% ---------------------------------------------------------------------------
+# endregion
+
+
+# region Real Sense Functions
+# ------------------------------------------------------------------------------
 #                               Real Sense Functions
 # ------------------------------------------------------------------------------
 def rs_config_color_pipeline(config_rs: rs.config,
@@ -250,6 +253,507 @@ def get_depth_scale(pipeline_rs: rs.pipeline):
         first_depth_sensor().get_depth_scale()
 
 
+# endregion
+
+
+# region Image Processing Functions
+# ------------------------------------------------------------------------------
+#                           Image Processing Functions
+# ------------------------------------------------------------------------------
+def get_keypoints_and_descriptors(imageL: np.ndarray, imageR: np.ndarray,
+                                  feature_desc: cv.Feature2D = None):
+    """
+    Computes the keypoints and descriptors of 2 images.
+
+    example:
+    kp_l, desc_l, kp_r, desc_r = get_keypoints_and_descriptors(image_l,
+                                                               image_r[,
+                                                               descriptor])
+
+    @param imageL: Left image
+    @type imageL: np.ndarray
+    @param imageR: Right image
+    @type imageR: np.ndarray
+    @param feature_desc: The feature descriptor. Can be ORB, SIFT, SURF,
+    etc. The default is SIFT is None is passed
+    @type feature_desc: cv.Feature2D
+    @return: Keypoints and descriptor of left image and keypoints and
+    descriptor of right image
+    @rtype: list, np.ndarray, list, np.ndarray
+    """
+    if feature_desc is None:
+        # Use SIFT Feature Descriptor to detect interest points as default
+        feature_desc = cv.SIFT_create()
+
+    assert isinstance(feature_desc, cv.Feature2D), \
+        "A object that inherits cv.Feature2D must be passed!"
+
+    # find the keypoints and descriptors
+    _kp1, _desc1 = feature_desc.detectAndCompute(image=imageL, mask=None)
+    _kp2, _desc2 = feature_desc.detectAndCompute(image=imageR, mask=None)
+
+    return _kp1, _desc1, _kp2, _desc2
+
+
+def get_matching_points(descriptorL: np.ndarray,
+                        descriptorR: np.ndarray,
+                        desc_matcher: cv.DescriptorMatcher = None,
+                        k: int = 2):
+    """
+    Computes the matches between keypoints. The matches are returned in the
+    distance increasing order.
+
+    example:
+    matches = get_matching_points(desc_l, desc_r[, matcher])
+
+    The matcher object must be FLANN or BFMatcher Type! See the examples below:
+    ----------------------------------------------------------------------------
+    Example of FLANN:
+    # FLANN parameters
+    FLANN_INDEX_KDTREE = 0
+    index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+    search_params = dict(checks=50)   # or pass empty dictionary
+
+    flann = cv2.FlannBasedMatcher(index_params,search_params)
+    ----------------------------------------------------------------------------
+
+    ----------------------------------------------------------------------------
+    Example of Brute Force:
+    cv.BFMatcher_create(normType=cv.NORM_L2)
+    ----------------------------------------------------------------------------
+
+    @param descriptorL: The left image keypoints descriptors
+    @type descriptorL: np.ndarray
+    @param descriptorR: The right image keypoints descriptors
+    @type descriptorR: np.ndarray
+    @param desc_matcher: A DescriptorMatcher object for fine tuning. This
+    can be either FLANN or BFMatcher.
+    @type desc_matcher: cv.DescriptorMatcher
+    @param k: Number of matches to return
+    @type k: int
+    @return: A list of matches
+    @rtype: list
+    """
+    if desc_matcher is None:
+        # Brute Force Matcher with default params
+        desc_matcher = cv.BFMatcher_create(normType=cv.NORM_L2)
+
+    assert isinstance(desc_matcher, cv.DescriptorMatcher), \
+        "A object that inherits cv.DescriptorMatcher must be passed!"
+
+    # Finds the k best matches for each descriptor from a query set.
+    return desc_matcher.knnMatch(queryDescriptors=descriptorL,
+                                 trainDescriptors=descriptorR,
+                                 k=k)
+
+
+def lowe_ratio_test(matches_list: list, keypointsL: list, keypointsR: list,
+                    K: float = 0.8, best_N: Union[int, float] = None):
+    """
+    Implements David Lowe ratio test.
+
+    example:
+    matches_l, matches_r, matches_l2r, matches_r2l = lowe_ratio_test(
+                                                    matches_list=matches_all,
+                                                    keypointsL=kp1,
+                                                    keypointsR=kp2,
+                                                    K=0.2,
+                                                    best_N=8)
+
+    @param matches_list: The matches list
+    @type matches_list: list
+    @param keypointsL: keypoints of the left image
+    @type keypointsL: list
+    @param keypointsR: keypoints of the right image
+    @type keypointsR: list
+    @param K: Lowe's ratio.
+    @type K: float
+    @param best_N: Number of best matches to return. If int returns the N
+    best matches, if float returns the N * matches results, if None returns
+    all matches.
+    @type best_N: Union[int, float]
+    @return: matchesL, matchesR, matches1to2, matches2to1
+    @rtype: list, list, list, list
+    """
+    assert type(best_N) is int or type(best_N) is float or best_N is None, \
+        "Best N should be int, float or None!"
+
+    # Initiate the array to store the values that mean the ratio test
+    # requirement
+    _matchesL = []
+    _matchesR = []
+    _matches1to2 = []
+    _matches2to1 = []
+
+    # Ratio test as described Lowe's paper
+    for _match1, _match2 in matches_list:
+        # If the (distance of the closest match)/(distance of the 2nd closest
+        # match) is below K then we consider the closest point as an
+        # unambiguous good (good = close) match.
+        if _match1.distance < K * _match2.distance:
+            # Access to the index of the match of the train set, which
+            # corresponds to right image, and add that point to the match
+            # points.
+            _matchesL.append(keypointsR[_match1.trainIdx].pt)
+
+            # Access to the index of the match of the query set, which
+            # corresponds to image L, and add that point to the match points.
+            _matchesR.append(keypointsL[_match1.queryIdx].pt)
+
+            # Same thing but instead of appending the individual keypoints of
+            # the images we append all the structure. Useful when plotting.
+            _matches1to2.append(_match1)
+            _matches2to1.append(_match2)
+
+            # Collect only the best N matches. This part is fundamental. If
+            # is not present we may encounter errors!
+            if (type(best_N) is int) and (len(_matchesL) >= best_N):
+                break
+
+    if type(best_N) is float:
+        best_N = int(np.rint(best_N * len(_matchesL)))
+
+        return _matchesL[:best_N], _matchesR[:best_N], \
+               _matches1to2[:best_N], _matches2to1[:best_N]
+
+    if type(best_N) is int:
+        assert len(_matchesL) >= best_N, \
+            f"Unable to find {best_N} matches! Try decreasing this value or " \
+            f"increase the Lowe Ratio."
+
+    return _matchesL, _matchesR, _matches1to2, _matches2to1
+
+
+def get_fundamental_matrix(matchesL: list, matchesR: list,
+                           search_method: int = cv.FM_RANSAC):
+    """
+    Gets the fundamental matrix from a given matches points.
+
+    example:
+    fund_mat, inliers_l, inliers_r = get_fundamental_matrix(matchesL=matches_l,
+                                                            matchesR=matches_r)
+
+    @param matchesL: The matches from the left image
+    @type matchesL: list
+    @param matchesR: The matches form the right image
+    @type matchesR: list
+    @param search_method: The search method to compute the fundamental matrix
+    @type search_method: int
+    @return: fundamental_mat, inliersL, inliersR
+    @rtype: np.ndarray, np.ndarray, np.ndarray
+    """
+    # RANSAC is the type of the algorithm for finding fundamental matrix.
+    # Can be cv.FM_7POINT, cv.FM_8POINT, cv.FM_LMEDS and cv.FM_RANSAC
+    # https://docs.opencv.org/master/d9/d0c/group__calib3d.html
+    # #gae850fad056e407befb9e2db04dd9e509
+    # https://docs.opencv.org/3.4/d9/d0c/group__calib3d.html
+    # #ga04167220173d36be64ec6ddfca21bf18
+    fundamental_mat, mask = cv.findFundamentalMat(points1=np.float64(matchesL),
+                                                  points2=np.float64(matchesR),
+                                                  method=search_method,
+                                                  ransacReprojThreshold=3,
+                                                  confidence=0.99,
+                                                  maxIters=2000)  # Default
+
+    # Ravel flattens the mask array. We select only the inliers (where the
+    # mask is 1) as matching points!
+    inliersL = np.float64(matchesL)[mask.ravel() == 1]
+    inliersR = np.float64(matchesR)[mask.ravel() == 1]
+
+    return fundamental_mat, inliersL, inliersR
+
+
+def get_homography(match_pts1: list, match_pts2: list,
+                   fundamental_mat: np.ndarray, size: tuple = None,
+                   img: np.ndarray = None):
+    """
+    Computes the homography matrix for image 1 and for image 2. Size or Image
+    should be passed.
+
+    example:
+    H1, H2 = get_homography(match_pts1, match_pts2, fundamental_mat, img)
+
+    @param match_pts1: The match point of the first image
+    @type match_pts1: list
+    @param match_pts2: The match point of the second image
+    @type match_pts2: list
+    @param fundamental_mat: The fundamental matrix
+    @type fundamental_mat: np.ndarray
+    @param size: A tuple with size like (width, height)
+    @type size: tuple
+    @param img: An image to extract the size
+    @type img: np.ndarray
+    @return: Homography matrix for image 1 and Homography matrix for image 2
+    @rtype: np.ndarray, np.ndarray
+    """
+    # HOMOGRAPHY: Correspondences between points in two different images from
+    # the same scene.
+    assert (size is not None) or (img is not None), \
+        "Size or Image must be passed!"
+
+    # Prevents warnings
+    _size = (np.NaN, np.NaN)
+
+    # size parameter always overwrites image size!
+    if img is not None:
+        # Size(double width, double height)
+        height, width = np.shape(img)
+        _size = width, height
+
+    # size parameter always overwrites image size!
+    if size is not None:
+        _size = size
+
+    # Compute output rectification homography matrix for the first image and
+    # second image and return H1 and H2.
+    return cv.stereoRectifyUncalibrated(points1=np.float32(match_pts1),
+                                        points2=np.float32(match_pts2),
+                                        F=fundamental_mat,
+                                        imgSize=_size,
+                                        threshold=3)[1:3]
+
+
+def get_rectified(img: np.ndarray, M_mat: np.ndarray,
+                  size: Union[tuple, int, float] = 1) -> np.ndarray:
+    """
+    Applies a perspective transformation to an image. The function
+    warpPerspective transforms the source image using the specified matrix.
+
+    example:
+    rectified = get_rectified(img=image, M_mat=H2to1)
+
+    @param img: Image to apply the perspective transformation
+    @type img: np.ndarray
+    @param M_mat: The transform matrix to apply to the image
+    @type M_mat: np.ndarray
+    @param size: The size of the output image. If not passed is equal to the
+    image size. Can be set to int or float to be a factor of the image size
+    @type size: tuple, int or float
+    @return: Transformed/rectified image
+    @rtype: np.ndarray
+    """
+
+    if type(size) is int or type(size) is float:
+        # Size(double width, double height)
+        height, width = np.shape(img)
+        size = np.rint(size * width).astype(np.int), np.round(
+            size * height).astype(np.int)
+
+    return cv.warpPerspective(src=img, M=M_mat, dsize=size)
+
+
+def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
+                      disparity_matcher: cv.StereoMatcher = None,
+                      disparity_filter: cv.ximgproc_DisparityFilter = None):
+    """
+    Returns the disparity map based on image 1 and image 2.
+
+    example:
+    disparity = get_disparity_map(imageL=left_ir, imageR=right_rect)
+
+    Based on https://docs.opencv.org/master/dd/d53/tutorial_py_depthmap.html
+
+    @param imageL: first stereo image to calculate the depth
+    @type imageL: np.ndarray
+    @param imageR: second stereo image to calculate the depth
+    @type imageR: np.ndarray
+    @param disparity_matcher: A StereoMatcher object to implement the stereo
+    correspondence algorithm. Available algorithms are: cv.StereoBM and
+    cv.StereoSGBM. Default is cv.StereoBM_create(numDisparities=64, blockSize=9)
+    @type disparity_matcher: cv.StereoMatcher
+    @param disparity_filter: An instance of a disparity filter
+    @type disparity_filter: cv.ximgproc.DisparityFilter
+    @return: the disparity map of the stereo image pair provided by
+    cv.StereoMatcher.compute method.
+    @rtype: np.ndarray
+    """
+    assert isinstance(disparity_filter, cv.ximgproc_DisparityFilter) or \
+           disparity_filter is None, \
+        "Disparity Filter must be an instance of " \
+        "cv.ximgproc_DisparityFilter or None!"
+
+    if disparity_matcher is None:
+        # Default disparity matcher if None is passed
+        disparity_matcher = cv.StereoBM_create(numDisparities=64, blockSize=9)
+
+    assert isinstance(disparity_matcher, cv.StereoMatcher), \
+        "Matcher object must be an instance of cv.StereoMatcher!"
+
+    # computes the disparity based on left image and right image
+    disparity_imgL = disparity_matcher.compute(left=imageL, right=imageR)
+
+    if isinstance(disparity_filter, cv.ximgproc_DisparityFilter):
+        # Creates the right matcher from the left matcher
+        disparity_matcher_R = \
+            cv.ximgproc.createRightMatcher(disparity_matcher)
+
+        # Computes disparity from right to left
+        disparity_imgR = disparity_matcher_R.compute(left=imageR,
+                                                     right=imageL)
+
+        # Filters and returns disparity
+        return disparity_filter.filter(disparity_map_left=disparity_imgL,
+                                       left_view=imageL,
+                                       disparity_map_right=disparity_imgR,
+                                       right_view=imageR)
+
+    return disparity_imgL
+
+
+# endregion
+
+
+# region Utility Functions
+# ------------------------------------------------------------------------------
+#                               Utility Functions
+# ------------------------------------------------------------------------------
+def avg_std_welford(sample: np.ndarray, _N: int,
+                    last_avg: np.ndarray, last_M2: np.ndarray):
+    """
+    Computes the average and standard deviation N samples, including the
+    actual sample.
+
+    @param sample: The current sample to be evaluated
+    @type sample: np.ndarray
+    @param _N: The number of current sample
+    @type _N: int
+    @param last_avg: last average
+    @type last_avg: np.ndarray
+    @param last_M2: last M2 param
+    @type last_M2: np.ndarray
+    @return: average, standard deviation, M2 and N
+    @rtype: np.ndarray, np.ndarray, np.ndarray, int
+    """
+
+    _avg = last_avg + (sample - last_avg) / _N
+    _M2 = last_M2 + (sample - last_avg) * (sample - _avg)
+    _std = _M2 / _N
+
+    return _avg, _std, _M2, _N
+
+
+def compute_error(orig: np.ndarray, test: np.ndarray, _N: int,
+                  _avg: np.ndarray, _M2: np.ndarray):
+    """
+    Computes the error between the original and test array using the absolute
+    difference between pixels. Welfoard algoritm is used.
+
+    @param orig: Original samples
+    @type orig: np.ndarray
+    @param test: Test samples
+    @type test: np.ndarray
+    @param _N: N iteration
+    @type _N: int
+    @param _avg: last average
+    @type _avg: np.ndarray
+    @param _M2: last M2
+    @type _M2: np.ndarray
+    @return: np.ndarray, np.ndarray, np.ndarray
+    @rtype: average, standard deviation, M2
+    """
+    # Creates a mark with the same shape of original image/array
+    _mask = np.zeros_like(orig)
+
+    # Sets the mask to 1 only when orig and test are bigger than 0
+    _abs_dif = np.zeros_like(orig)
+    np.putmask(_abs_dif, (orig > 0) & (test > 0), np.abs(orig - test))
+
+    # Applies Welford algoritm to compute avg and std (M2 is also returned)
+    return avg_std_welford(sample=_abs_dif, _N=_N,
+                           last_avg=_avg,
+                           last_M2=_M2)[:3]
+
+
+def zero_outliers(data: np.ndarray, m: float = 2.):
+    """
+    Sets the outliers to 0 on an numpy array. Based on:
+    https://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
+    """
+    d = np.abs(data - np.median(data))
+    mdev = np.median(d)
+    s = d / mdev if mdev else 0.
+    data[s >= m] = 0
+    return data
+
+
+def draw_error(current: np.ndarray, data: list,
+               wh: int, sc: float, _data_max: float, _data_min: float):
+    """
+    Draws an "oscilloscope" style graph with the data. Because the graph is
+    active the current "image" needs to be passed so the next one can be
+    generated.
+
+    example:
+    # Draws a graph showing the average and std
+    error_graph, _error_graph_max, error_graph_min = draw_error(
+        current=error_graph,
+        data=[global_avg, global_std],
+        _data_max=_error_graph_max,
+        _data_min=_error_graph_min,
+        wh=win_h,
+        sc=scale
+    )
+
+    @param current: Current image. initialize it as a null array and then
+    update it with the return of this function.
+    @type current: np.ndarray
+    @param data: The data to be plotted. Always pass a list, even with only
+    one element.
+    @type data: list
+    @param wh: The graph window height or the height of the current image.
+    @type wh: int
+    @param sc: A scale factor to apply when the data to be shows is too
+    small. Keep in mind that the data will be rounded and assigned to a row
+    index based on it's value.
+    @type sc: float
+    @param _data_max: Maximum value of the data. Needed for updating the window
+    if the data goes above the window height. This value should be
+    initialized as 0 and updated on every iteration.
+    @type _data_max: float
+    @param _data_min: Minimum value of the data. Needed for updating the window
+    if the data goes below the window height. This value should be
+    initialized as 0 and updated on every iteration.
+    @type _data_min: float
+    @return: The image to be show (cv.imshow), the new data_max and data_min
+    @rtype: np.ndarray, float, float
+    """
+    COLORS = [
+        (255, 0, 255),
+        (0, 255, 255),
+        (0, 0, 255),
+        (0, 255, 0),
+        (255, 0, 0),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 0),
+    ]
+
+    # Shift the data on the error window
+    _graph = np.roll(current, -1, axis=1)
+
+    if np.max(data) > _data_max:
+        _data_max = np.max(data)
+        _shift = np.ceil(np.abs(_data_max - wh)).astype(np.int)
+        _graph = np.roll(_graph, _shift, axis=0)
+    if np.min(data) < _data_min:
+        _data_min = np.min(data)
+        _shift = np.ceil(np.abs(_data_min - wh)).astype(np.int)
+        _graph = np.roll(_graph, -_shift, axis=0)
+
+    # Sets the last column to zero to store new data
+    _graph[:, -1] = 0
+
+    # Stores new data. The index of the row is proportional to the value of
+    # the data. Color is BGR so: AVG is Pink and STD is Yellow
+    for i, d in enumerate(data):
+        _graph[wh - 1 - np.rint(d * sc).astype(np.int), -1] = COLORS[i]
+
+    return _graph, _data_max, _data_min
+
+
+# endregion
+
+
 # ------------------------------------------------------------------------------
 #                                       Main
 # ------------------------------------------------------------------------------
@@ -260,7 +764,7 @@ RGB_CALIB = os.path.join("..", "..", "data",
 STREAM = os.path.join("..", "..", "data",
                       "CV_D435_20201104_162148.bag")
 
-path = RGB_CALIB
+path = FULL_CALIB
 
 # Creates a Real Sense Pipeline Object
 pipeline = rs.pipeline(ctx=rs.context())
@@ -281,110 +785,142 @@ except RuntimeError as err:
     print(err)
     raise RuntimeError("Make sure the config streams exists in the device!")
 
+# Create colorizer object to apply to depth frames
+colorizer = rs.colorizer()
+
 # Get intrinsics and extrinsics parameters from the multiple profiles of
 # the pipeline
-intrinsics_orig, extrinsics_orig = get_intrinsics_extrinsics(
-    pipeline_rs=pipeline)
+intrinsics, extrinsics = get_intrinsics_extrinsics(pipeline_rs=pipeline)
 
 # Obtain the depth scale
-depth_scale = get_depth_scale(pipeline_rs=pipeline)
-print("Depth Scale is [m/px_val]: ", depth_scale)
+rs_depth_scale = get_depth_scale(pipeline_rs=pipeline)
+print("Depth Scale is [m/px_val]: ", rs_depth_scale)
 
 # Distance between left and right IR cameras in meters. Cameras are
 # assumed to be parallel to each other. We are assuming no distortion for
 # all cameras
-baseline = 0.05  # extrinsics["Infrared 2 -> Infrared 1"][1][0]
-
-# Creates windows to display the frames
-cv.namedWindow("Color Stream", cv.WINDOW_AUTOSIZE)
+baseline = 0.05  # m
 
 # Number of Inner Corners of the chessboard pattern
-chess_inner_corners = (9, 6)
-
-# Termination criteria set the desired accuracy to 0.001 and  and maximum
-# iterations to 30
-criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+chess_rows = 6
+chess_cols = 9
+# patternSize = (points_per_row, points_per_column)
+chess_size = (chess_rows, chess_cols)
 
 # Stores all corner points that where found on the image
 image_points = []
 
 # Creates a list with the real world object(chessboard pattern) coordinates
 square_size = 2.5
-obj_point = np.zeros(
-    ((chess_inner_corners[0]) * (chess_inner_corners[1]),
-     3), np.float32)
+obj_point = np.zeros((chess_rows * chess_cols, 3), dtype=np.float32)
 obj_point[:, :2] = np.mgrid[
-                   0:(chess_inner_corners[0]) * square_size:square_size,
-                   0:(chess_inner_corners[1]) * square_size:square_size] \
-    .T.reshape(-1, 2)
+                   0:chess_rows * square_size:square_size,
+                   0:chess_cols * square_size:square_size
+                   ].T.reshape(-1, 2)
 
 # Used to store all the real world points of the chessboard pattern
 obj_points = []
 
+# Search for chessboard pattern for N frames after the trigger key is pressed
+_FRAMES_2_SEARCH = 10
+
 # Number of corners required to compute the calibration matrix
 _MIN_CORNERS = 10
 
+cv.namedWindow("ChessBoard Pattern", cv.WINDOW_AUTOSIZE + cv.WINDOW_FREERATIO)
+
+# Main cycle/loop
 while True:
+    # Read key and waits 1ms
+    key = cv.waitKey(1)
+
     # Wait for new frames and grabs the frameset
     frameset = pipeline.wait_for_frames()
 
     # Get RGB Camera frame
-    color_rgb = cv.cvtColor(
-        np.asanyarray(frameset.get_color_frame().get_data()), cv.COLOR_BGR2RGB)
-    color_gray = cv.cvtColor(color_rgb, cv.COLOR_RGB2GRAY)
+    rs_color_rgb = cv.cvtColor(
+        np.asanyarray(frameset.get_color_frame().get_data()),
+        cv.COLOR_BGR2RGB
+    )
+    rs_color_gray = cv.cvtColor(rs_color_rgb, cv.COLOR_RGB2GRAY)
 
     # Render image in opencv window
-    cv.imshow("Color Stream", color_rgb)
+    cv.imshow("Color Stream", rs_color_rgb)
 
-    # Number of inner corners per a chessboard row and column ( patternSize =
-    # cv::Size(points_per_row,points_per_colum) = cv::Size(columns,rows)
-    ret_val, corners = cv.findChessboardCorners(image=color_gray,
-                                                patternSize=chess_inner_corners)
+    # If SPACE is pressed
+    if key == 32:
+        # Find the chessboard inner corners
+        ret_val, corners = cv.findChessboardCorners(image=rs_color_gray,
+                                                    patternSize=chess_size)
 
-    if ret_val:
-        # Adds the real world coordinates to the array that stores the real
-        # world coordinates.
-        obj_points.append(obj_point)
+        if ret_val:
+            # Adds the real world coordinates to the array that stores the real
+            # world coordinates.
+            obj_points.append(obj_point)
 
-        # Gets the corners with subpixel accuracy
-        _corners = cv.cornerSubPix(image=color_gray,
-                                   corners=corners,
-                                   winSize=(11, 11),
-                                   zeroZone=(-1, -1),
-                                   criteria=criteria)
+            # Adds the image point to the array.
+            image_points.append(corners)  # NOQA - Supressed warnings on the
+            # current line. Used to prevent "Name corners can be undefined"
 
-        # Adds the image point to the array
-        image_points.append(_corners)
+            # Resizes the image to display it.
+            _img_resized = cv.resize(
+                src=cv.drawChessboardCorners(image=rs_color_rgb,
+                                             patternSize=chess_size,
+                                             corners=corners,
+                                             patternWasFound=ret_val),
+                dsize=None,
+                fx=0.08,
+                fy=0.08)
 
-        # Draws the corners on a image for visualization
-        img_corners = cv.drawChessboardCorners(image=color_rgb,
-                                               patternSize=chess_inner_corners,
-                                               corners=_corners,
-                                               patternWasFound=ret_val)
-        cv.imshow("ChessBoard Pattern", img_corners)
+            # FIXME Highly efficient but not user friendly
+            # Draws the corners on a image for visualization
+            try:
+                image_corners = np.hstack((image_corners, _img_resized))  # NOQA
+            # If image_corners is not defined then is equal to the first image
+            except NameError:
+                image_corners = _img_resized
 
-    # time.sleep(10)  # time in seconds
+            # If the array of the image points have more than the minimum
+            # images required for computation...
+            if len(image_points) > _MIN_CORNERS:
+                # Removes the first entry (or the oldest one) from the array
+                # of images to show so that the array is always only
+                # _MIN_CORNERS length
+                image_corners = image_corners[:, _img_resized.shape[1]:, :]
+
+                # Removes the first entry, meaning the oldest one, of the
+                # image_points and object_points
+                obj_points.pop(0)
+                image_points.pop(0)
+
+            # Shows the image
+            cv.imshow("ChessBoard Pattern", image_corners)
 
     if len(image_points) > _MIN_CORNERS:
-        h, w = color_gray.shape[:2]
-        ret, mtx, dist, rvecs, tvecs = cv.calibrateCamera(
-            objectPoints=obj_points,
-            imagePoints=image_points,
-            imageSize=(w, h),
-            cameraMatrix=None,
-            distCoeffs=None)
+        # TODO Camera Calibration
+        pass
 
-        mean_error = 0
-        for i in range(len(obj_points)):
-            imgpoints2, _ = cv.projectPoints(obj_points[i], rvecs[i], tvecs[i],
-                                             mtx, dist)
-            error = cv.norm(image_points[i], imgpoints2, cv.NORM_L2) / len(
-                imgpoints2)
-            mean_error += error
+    """
+    # Computes AVG and STD for quality metrics
+    rs_depth_scaled = rs_depth * rs_depth_scale
+    avg, std, M2 = compute_error(
+        orig=rs_depth_scaled,
+        test=depth,
+        _N=count,
+        _avg=avg,
+        _M2=M2
+    )
 
-        print(f"error: {mean_error / len(obj_points)}\t")
+    # Gets average of all pixels
+    global_avg = np.average(avg)
 
-    key = cv.waitKey(1)
+    # Gets the std of all pixels
+    global_std = np.average(std)
+
+    # Prints the AVG of the absolute difference of all pixels and the STD
+    print(f"AVG: {str(global_avg)};\t-\tSTD: {str(global_std)}")
+    # """
+
     # if pressed ESCAPE exit program
     if key == 27:
         cv.destroyAllWindows()
