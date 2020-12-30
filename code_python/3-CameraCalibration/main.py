@@ -664,7 +664,7 @@ def compute_error(orig: np.ndarray, test: np.ndarray, _N: int,
                            last_M2=_M2)[:3]
 
 
-def zero_outliers(data: np.ndarray, m: float = 2.):
+def get_inliers(data: np.ndarray, m: float = 2.):
     """
     Sets the outliers to 0 on an numpy array. Based on:
     https://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
@@ -672,8 +672,7 @@ def zero_outliers(data: np.ndarray, m: float = 2.):
     d = np.abs(data - np.median(data))
     mdev = np.median(d)
     s = d / mdev if mdev else 0.
-    data[s >= m] = 0
-    return data
+    return data[s >= m]
 
 
 def draw_error(current: np.ndarray, data: list,
@@ -810,13 +809,17 @@ chess_size = (chess_rows, chess_cols)
 # Stores all corner points that where found on the image
 image_points = []
 
+# Sets the length of the chessboard square
+square_size = 2.5  # Length of the square (2.5)
+units = 0.01  # Units of square_size (cm)
+
 # Creates a list with the real world object(chessboard pattern) coordinates
-square_size = 2.5
 obj_point = np.zeros((chess_rows * chess_cols, 3), dtype=np.float32)
 obj_point[:, :2] = np.mgrid[
                    0:chess_rows * square_size:square_size,
                    0:chess_cols * square_size:square_size
                    ].T.reshape(-1, 2)
+obj_point = obj_point * units
 
 # Used to store all the real world points of the chessboard pattern
 obj_points = []
@@ -885,16 +888,18 @@ while True:
             # world coordinates.
             obj_points.append(obj_point)
 
-            corners_subpixacc = cv.cornerSubPix(image=rs_color_gray,
-                                                corners=corners,
-                                                winSize=(11, 11),
-                                                zeroZone=(-1, -1),
-                                                criteria=(
-                                                    cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER,
-                                                    30, 0.001))
+            """
+            corners = cv.cornerSubPix(image=rs_color_gray,
+                                      corners=corners,
+                                      winSize=(11, 11),
+                                      zeroZone=(-1, -1),
+                                      criteria=(cv.TERM_CRITERIA_EPS +
+                                                cv.TERM_CRITERIA_MAX_ITER,
+                                                30, 0.001))
+            # """
 
             # Adds the image point to the array.
-            image_points.append(corners_subpixacc)  # NOQA - Supressed
+            image_points.append(corners)  # NOQA - Supressed
             # warnings on the current line. Used to prevent "Name corners can
             # be undefined"
 
@@ -902,7 +907,7 @@ while True:
             _img_resized = cv.resize(
                 src=cv.drawChessboardCorners(image=rs_color_rgb,
                                              patternSize=chess_size,
-                                             corners=corners_subpixacc,
+                                             corners=corners,
                                              patternWasFound=ret_val),
                 dsize=None,
                 fx=1 / _MIN_CORNERS,
@@ -928,9 +933,55 @@ while True:
                     cameraMatrix=None,
                     distCoeffs=None)
 
+                rot_vec = np.array(rot_vec)
+                # FIXME Remove outliers or retain inliers only!
+                """
+                _inliers = get_inliers(rot_vec[:, 0, :], m=2)
+                rotX_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = get_inliers(rot_vec[:, 1, :], m=2)
+                rotY_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = get_inliers(rot_vec[:, 2, :], m=2)
+                rotZ_avg = np.sum(_inliers) / len(_inliers)
+                """
+                rotX_avg = np.sum(rot_vec[:, 0, :]) / _MIN_CORNERS
+                rotY_avg = np.sum(rot_vec[:, 1, :]) / _MIN_CORNERS
+                rotZ_avg = np.sum(rot_vec[:, 2, :]) / _MIN_CORNERS
+                rot_vec_avg = np.vstack((rotX_avg, rotY_avg, rotZ_avg))
+                rot_mat = cv.Rodrigues(rot_vec_avg)[0]
+
+                trans_vec = np.array(trans_vec)
+                # FIXME Remove outliers or retain inliers only!
+                """
+                _inliers = get_inliers(trans_vec[:, 0, :], m=2)
+                transX_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = get_inliers(trans_vec[:, 1, :], m=2)
+                transY_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = get_inliers(trans_vec[:, 2, :], m=2)
+                transZ_avg = np.sum(_inliers) / len(_inliers)
+                """
+                transX_avg = np.sum(trans_vec[:, 0, :]) / _MIN_CORNERS
+                transY_avg = np.sum(trans_vec[:, 1, :]) / _MIN_CORNERS
+                transZ_avg = np.sum(trans_vec[:, 2, :]) / _MIN_CORNERS
+                trans_vec_avg = np.vstack((transX_avg, transY_avg, transZ_avg))
+
                 print("\n----------------------------------------")
-                print("\t\t\tCamera Matrix")
+                print("\tIntrinsics Matrix")
                 print(np.round(cam_mat, 2))
+                print("----------------------------------------\n")
+
+                print("\n----------------------------------------")
+                print("\tTranslation Vector")
+                print(np.round(trans_vec_avg, 2))
+                print("----------------------------------------\n")
+
+                print("\n----------------------------------------")
+                print("\tRotation Matrix")
+                print(np.round(rot_mat, 2))
+                print("----------------------------------------\n")
+
+                print("\n----------------------------------------")
+                print("\tExtrinsic Matrix")
+                print(np.round(np.hstack((trans_vec_avg, rot_mat)), 2))
                 print("----------------------------------------\n")
 
     """
