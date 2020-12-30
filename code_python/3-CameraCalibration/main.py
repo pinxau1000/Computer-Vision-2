@@ -764,7 +764,7 @@ RGB_CALIB = os.path.join("..", "..", "data",
 STREAM = os.path.join("..", "..", "data",
                       "CV_D435_20201104_162148.bag")
 
-path = FULL_CALIB
+path = RGB_CALIB
 
 # Creates a Real Sense Pipeline Object
 pipeline = rs.pipeline(ctx=rs.context())
@@ -821,13 +821,18 @@ obj_point[:, :2] = np.mgrid[
 # Used to store all the real world points of the chessboard pattern
 obj_points = []
 
-# Search for chessboard pattern for N frames after the trigger key is pressed
-_FRAMES_2_SEARCH = 10
-
 # Number of corners required to compute the calibration matrix
 _MIN_CORNERS = 10
 
-cv.namedWindow("ChessBoard Pattern", cv.WINDOW_AUTOSIZE + cv.WINDOW_FREERATIO)
+# Window to show the stream
+cv.namedWindow("Color Stream", cv.WINDOW_AUTOSIZE)
+
+# Tells user how to proceed
+for _ in range(10):
+    print("PRESS SPACE TO CAPTURE A FRAME FOR CALIBRATION!")
+
+# FLAG (Don't touch)
+first_run = True
 
 # Main cycle/loop
 while True:
@@ -844,8 +849,30 @@ while True:
     )
     rs_color_gray = cv.cvtColor(rs_color_rgb, cv.COLOR_RGB2GRAY)
 
+    # Gather image information on the first run
+    if first_run:
+        # Image dimensions
+        _h_, _w_, _c_ = rs_color_rgb.shape[:3]
+
+        # Resized image dimensions
+        _h_rsz_, _w_rsz_ = cv.resize(
+            src=rs_color_rgb,
+            dsize=None,
+            fx=1 / _MIN_CORNERS,
+            fy=1 / _MIN_CORNERS).shape[:2]
+
+        # Creates the space to hold the images
+        image_corners = np.zeros((_h_rsz_, _w_, _c_))
+        image_corners[:, :, :] = [65, 65, 65]  # Gray
+        first_run = False
+
+    # Creates a division bar and stacks it to the images
+    div = np.zeros((4, _w_, _c_))  # NOQA
+    div[:, :, :] = [100, 100, 65]  # Dark Cyan Blue
+    image_bar = np.vstack((div, image_corners))  # NOQA
+
     # Render image in opencv window
-    cv.imshow("Color Stream", rs_color_rgb)
+    cv.imshow("Color Stream", np.uint8(np.vstack((rs_color_rgb, image_bar))))
 
     # If SPACE is pressed
     if key == 32:
@@ -858,47 +885,53 @@ while True:
             # world coordinates.
             obj_points.append(obj_point)
 
+            corners_subpixacc = cv.cornerSubPix(image=rs_color_gray,
+                                                corners=corners,
+                                                winSize=(11, 11),
+                                                zeroZone=(-1, -1),
+                                                criteria=(
+                                                    cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER,
+                                                    30, 0.001))
+
             # Adds the image point to the array.
-            image_points.append(corners)  # NOQA - Supressed warnings on the
-            # current line. Used to prevent "Name corners can be undefined"
+            image_points.append(corners_subpixacc)  # NOQA - Supressed
+            # warnings on the current line. Used to prevent "Name corners can
+            # be undefined"
 
             # Resizes the image to display it.
             _img_resized = cv.resize(
                 src=cv.drawChessboardCorners(image=rs_color_rgb,
                                              patternSize=chess_size,
-                                             corners=corners,
+                                             corners=corners_subpixacc,
                                              patternWasFound=ret_val),
                 dsize=None,
-                fx=0.08,
-                fy=0.08)
+                fx=1 / _MIN_CORNERS,
+                fy=1 / _MIN_CORNERS)
 
-            # FIXME Highly efficient but not user friendly
-            # Draws the corners on a image for visualization
-            try:
-                image_corners = np.hstack((image_corners, _img_resized))  # NOQA
-            # If image_corners is not defined then is equal to the first image
-            except NameError:
-                image_corners = _img_resized
+            # Stacks the resized image of the corners to the previous images
+            image_corners = np.uint8(np.hstack((image_corners, _img_resized)))
+            # Removes the oldest image.
+            image_corners = image_corners[:, _w_rsz_:]  # NOQA
 
             # If the array of the image points have more than the minimum
             # images required for computation...
             if len(image_points) > _MIN_CORNERS:
-                # Removes the first entry (or the oldest one) from the array
-                # of images to show so that the array is always only
-                # _MIN_CORNERS length
-                image_corners = image_corners[:, _img_resized.shape[1]:, :]
-
                 # Removes the first entry, meaning the oldest one, of the
                 # image_points and object_points
                 obj_points.pop(0)
                 image_points.pop(0)
 
-            # Shows the image
-            cv.imshow("ChessBoard Pattern", image_corners)
+                _, cam_mat, dist_coef, rot_vec, trans_vec = cv.calibrateCamera(
+                    objectPoints=obj_points,
+                    imagePoints=image_points,
+                    imageSize=(rs_color_rgb.shape[1], rs_color_rgb.shape[0]),
+                    cameraMatrix=None,
+                    distCoeffs=None)
 
-    if len(image_points) > _MIN_CORNERS:
-        # TODO Camera Calibration
-        pass
+                print("\n----------------------------------------")
+                print("\t\t\tCamera Matrix")
+                print(np.round(cam_mat, 2))
+                print("----------------------------------------\n")
 
     """
     # Computes AVG and STD for quality metrics
