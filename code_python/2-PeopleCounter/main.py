@@ -8,6 +8,8 @@ from typing import Union
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
 import numpy as np
+
+
 # endregion
 
 
@@ -249,6 +251,8 @@ def get_depth_scale(pipeline_rs: rs.pipeline):
     # Depth Scale and returns it.
     return pipeline_rs.get_active_profile().get_device(). \
         first_depth_sensor().get_depth_scale()
+
+
 # endregion
 
 
@@ -410,7 +414,7 @@ def lowe_ratio_test(matches_list: list, keypointsL: list, keypointsR: list,
         best_N = int(np.rint(best_N * len(_matchesL)))
 
         return _matchesL[:best_N], _matchesR[:best_N], \
-            _matches1to2[:best_N], _matches2to1[:best_N]
+               _matches1to2[:best_N], _matches2to1[:best_N]
 
     if type(best_N) is int:
         assert len(_matchesL) >= best_N, \
@@ -566,7 +570,7 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
     @rtype: np.ndarray
     """
     assert isinstance(disparity_filter, cv.ximgproc_DisparityFilter) or \
-        disparity_filter is None, \
+           disparity_filter is None, \
         "Disparity Filter must be an instance of cv.ximgproc_DisparityFilter!"
 
     if disparity_matcher is None:
@@ -591,6 +595,8 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
                                            left_view=imageL)
 
     return disparity_img1
+
+
 # endregion
 
 
@@ -768,20 +774,15 @@ def draw_error(current: np.ndarray, data: list,
         _graph[wh - 1 - np.rint(d * sc).astype(np.int), -1] = COLORS[i]
 
     return _graph, _data_max, _data_min
+
+
 # endregion
 
 
 # ------------------------------------------------------------------------------
 #                                       Main
 # ------------------------------------------------------------------------------
-FULL_CALIB = os.path.join("..", "..", "data",
-                          "CV_D435_20201104_161043_Full_calibration.bag")
-RGB_CALIB = os.path.join("..", "..", "data",
-                         "CV_D435_20201104_160738_RGB_calibration.bag")
-STREAM = os.path.join("..", "..", "data",
-                      "CV_D435_20201104_162148.bag")
-
-path = STREAM
+path = os.path.join("..", "..", "data", "CV_D435_20201104_162148.bag")
 
 # Creates a Real Sense Pipeline Object
 pipeline = rs.pipeline(ctx=rs.context())
@@ -794,7 +795,6 @@ config = rs.config()
 # real camera).
 config.enable_device_from_file(file_name=path, repeat_playback=True)
 config = rs_config_color_pipeline(config_rs=config)
-config = rs_config_IR_pipeline(config_rs=config)
 config = rs_config_depth_pipeline(config_rs=config)
 
 try:
@@ -804,8 +804,8 @@ except RuntimeError as err:
     print(err)
     raise RuntimeError("Make sure the config streams exists in the device!")
 
-# Create colorizer object to apply to depth frames
-colorizer = rs.colorizer()
+# Create colorizer object to apply to depth frames (JET Color Map)
+colorizer = rs.colorizer(0)
 
 # Get intrinsics and extrinsics parameters from the multiple profiles of
 # the pipeline
@@ -823,27 +823,103 @@ baseline = 0.05  # m
 # FLAG to enable the calculation of transform matrix on the first run
 first_run = True
 
+cv.namedWindow("Color - Depth Stream", cv.WINDOW_AUTOSIZE)
+
 # Main cycle/loop
 while True:
+    # Read key and waits 1ms
+    key = cv.waitKey(1)
+
     # Wait for new frames and grabs the frameset
     frameset = pipeline.wait_for_frames()
 
-    # Get Depth Frames with Color
-    rs_depth_color = np.asanyarray(
-        colorizer.colorize(frameset.get_depth_frame()).get_data())
+    # RS435 Color Frame Object
+    color_frame = frameset.get_color_frame()
+    # Get RGB Camera frame (Color)
+    rs_color_rgb = cv.cvtColor(np.asanyarray(color_frame.get_data()),
+                               cv.COLOR_BGR2RGB)
+    # Get RGB Camera frame (Gray)
+    rs_color_gray = cv.cvtColor(np.asanyarray(color_frame.get_data()),
+                                cv.COLOR_BGR2GRAY)
 
+    # RS435 Depth Frame Object
+    depth_frame = frameset.get_depth_frame()
+    # Get Depth Frames with Color (JET Color Map)
+    rs_depth_color = np.asanyarray(colorizer.colorize(depth_frame).get_data())
     # Get Depth Frames without Color (Used for distance calculation)
-    rs_depth = np.asanyarray(frameset.get_depth_frame().get_data())
+    rs_depth = np.asanyarray(depth_frame.get_data())
+
 
     # Render image in opencv window
-    cv.imshow("D435 Depth Stream", rs_depth_color)
+    cv.imshow("Color - Depth Stream", np.hstack((rs_color_rgb, rs_depth_color)))
 
     if first_run:
-        # Keep the H1 and H2 from the first run for the next frames.
+        previous_gray = np.copy(rs_color_gray)
+        mask = np.zeros_like(rs_color_rgb)
+        features_prev = cv.goodFeaturesToTrack(image=previous_gray,
+                                               maxCorners=300,
+                                               qualityLevel=0.2,
+                                               minDistance=2,
+                                               blockSize=7,
+                                               mask=None)
         first_run = False
 
-    # Read key and waits 1ms
-    key = cv.waitKey(1)
+    # Calculates sparse optical flow by Lucas-Kanade method
+    # https://docs.opencv.org/3.0-beta/modules/video/doc/motion_analysis_and_object_tracking.html#calcopticalflowpyrlk
+    features_next, status, error = cv.calcOpticalFlowPyrLK(
+        prevImg=previous_gray,
+        nextImg=rs_color_gray,
+        prevPts=features_prev,
+        nextPts=None,
+        winSize=(15, 15),
+        maxLevel=2,
+        criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03)
+    )
+
+    # Selects good feature points for previous position
+    good_prev = features_prev[status == 1]
+
+    # Selects good feature points for next position
+    good_next = features_next[status == 1]
+
+    # A random line color per iteration/frame
+    color = (int(np.random.randint(0, 256, dtype=np.uint8)),
+             int(np.random.randint(0, 256, dtype=np.uint8)),
+             int(np.random.randint(0, 256, dtype=np.uint8)))
+
+    # Draws the optical flow tracks
+    for i, (new, old) in enumerate(zip(good_next, good_prev)):
+        # Returns a contiguous flattened array as (x, y) coordinates for new point
+        a, b = new.ravel()
+        # Returns a contiguous flattened array as (x, y) coordinates for old point
+        c, d = old.ravel()
+        # Draws line between new and old position with green color and 2 thickness
+        mask = cv.line(mask, (a, b), (c, d), color, 2)
+        # Draws filled circle (thickness of -1) at new position with green color and radius of 3
+        rs_color_rgb = cv.circle(rs_color_rgb, (a, b), 3, color, -1)
+        # Overlays the optical flow tracks on the original frame
+
+    output = cv.add(rs_color_rgb, mask)
+
+    features_prev = cv.goodFeaturesToTrack(image=previous_gray,
+                                           maxCorners=300,
+                                           qualityLevel=0.8,
+                                           minDistance=2,
+                                           blockSize=7,
+                                           mask=None)
+
+    # Updates previous good feature points
+    features_prev = np.vstack((good_next.reshape(-1, 1, 2), features_prev))
+
+    if len(features_prev) > 30:
+        features_prev = features_prev[:30,:,:]
+
+    # Updates previous gray frame
+    previous_gray = np.copy(rs_color_gray)
+
+    # Opens a new window and displays the output frame
+    cv.imshow("sparse optical flow", output)
+
     # if pressed ESCAPE exit program
     if key == 27:
         cv.destroyAllWindows()

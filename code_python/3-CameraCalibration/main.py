@@ -850,7 +850,10 @@ while True:
         np.asanyarray(frameset.get_color_frame().get_data()),
         cv.COLOR_BGR2RGB
     )
-    rs_color_gray = cv.cvtColor(rs_color_rgb, cv.COLOR_RGB2GRAY)
+    rs_color_gray = cv.cvtColor(
+        np.asanyarray(frameset.get_color_frame().get_data()),
+        cv.COLOR_BGR2GRAY
+    )
 
     # Gather image information on the first run
     if first_run:

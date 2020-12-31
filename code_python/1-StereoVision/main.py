@@ -798,8 +798,10 @@ except RuntimeError as err:
     print(err)
     raise RuntimeError("Make sure the config streams exists in the device!")
 
-# Create colorizer object to apply to depth frames
-colorizer = rs.colorizer()
+# Create colorizer object to apply to depth frames. Possible values for
+# color_scheme: 0 - Jet; 1 - Classic; 2 - WhiteToBlack; 3 - BlackToWhite;
+# 4 - Bio; 5 - Cold; 6 - Warm; 7 - Quantized; 8 - Pattern
+colorizer = rs.colorizer(0)
 
 # Get intrinsics and extrinsics parameters from the multiple profiles of
 # the pipeline
@@ -868,11 +870,11 @@ while True:
     # Render image in opencv window
     # cv.imshow("IR Stream", np.hstack((left_ir, right_ir)))
 
-    # Get Depth Frames with Color
-    rs_depth_color = np.asanyarray(
-        colorizer.colorize(frameset.get_depth_frame()).get_data())
+    depth_frame = frameset.get_depth_frame()
+    # Get Depth Frames with Color (JET Color Map)
+    rs_depth_color = np.asanyarray(colorizer.colorize(depth_frame).get_data())
     # Get Depth Frames without Color (Used for distance calculation)
-    rs_depth = np.asanyarray(frameset.get_depth_frame().get_data())
+    rs_depth = np.asanyarray(depth_frame.get_data())
 
     # Render image in opencv window
     cv.imshow("D435 Depth Map", rs_depth_color)
