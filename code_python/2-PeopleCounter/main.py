@@ -4,6 +4,7 @@
 # ------------------------------------------------------------------------------
 import os
 from typing import Union
+from enum import IntEnum
 
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
@@ -776,6 +777,19 @@ def draw_error(current: np.ndarray, data: list,
     return _graph, _data_max, _data_min
 
 
+class MaskTypes(IntEnum):
+    SUM = 1
+    ANY = 1
+    SUMMATION = 1
+    AVG = 2
+    AVERAGE = 2
+
+
+class BackGroundTypes(IntEnum):
+    BG = 0
+    BACKGROUND = 0
+    AVG = 1
+    AVERAGE = 1
 # endregion
 
 
@@ -824,14 +838,48 @@ baseline = 0.05  # m
 # FLAG to enable the calculation of transform matrix on the first run
 first_run = True
 
+# Creates a window to show color and depth stream
 cv.namedWindow("Color - Depth Stream", cv.WINDOW_KEEPRATIO)
 
-_iter_count = 0
-_MAX_FEATURES = 30
-_MIN_ITER = 0
-_QUALITY_LVL_SHITOMASI = 0.8
-_NUM_LINES = 10
+_MAX_FEATURES = 60
 
+# Minimum iterations to search for new features. If 0 then always search.
+_MIN_ITER = 1
+
+# SHI TOMASI Feature Detector Quality Level
+_QUALITY_LVL_SHITOMASI = 0.8
+
+# Number of lines to retain in the image presented to the user for each keypoint
+_NUM_LINES = 4
+
+# The type of the background to compute the absolute differences.
+#   - If BackGroundTypes.BG: The first frame is always compared with the rest
+#   of the frames and the difference is computed from there.
+#   - If BackGroundTypes.AVG: The N last images are averaged and the absolute
+#   difference is computed. The N last frames is setted by _NUM_IMG.
+# The background type is used to compute the mask to try to remove unintended
+# points from the shi-tomasi computation.
+_BACKGROUND_TYPE = BackGroundTypes.AVG
+_NUM_IMG = 4
+
+# The type of processing to compute the mask to find new feature points on
+# each _MIN_ITER. The number of masks that are taken into account is given by
+# the value set by _NUM_MASKS.
+#   - If MaskTypes.AVG: The N last masks are averaged. If average of mask is
+#   greater than 0.5 of its maximum then the mask is set to 1, meaning that
+#   the shi-tomasi corner detector will try to find a keypoint there,
+#   otherwise is set to 0 and shi-tomasi corner detector will ignore the area.
+#   - If MaskTypes.ANY: The N last masks are summed. If the any of these
+#   masks is 1 then the shi-tomasi corner detector will try to find keypoints
+#   on that region.
+# Everytime a mask is processed is taked into account the last points that
+# were found so that the same points are not found again.
+# The mask is computed with the background type defined above.
+_MASK_TYPE = MaskTypes.AVG
+_NUM_MASKS = 4
+
+# Don't Touch! _iter_count is a counter!
+_iter_count = 0
 # Main cycle/loop
 while True:
     # Read key and waits 1ms
@@ -852,14 +900,7 @@ while True:
     rs_depth_color = np.asanyarray(
         colorizer_jet.colorize(depth_frame).get_data()
     )
-    """
-    # CAUTION: This gray scale depth map has 3 channels, and the 3 channels 
-    # have different values!
-    Get Depth Frames with Color (White Close - Black Far) 
-    rs_depth_gray = np.asanyarray(
-        colorizer_gray.colorize(depth_frame).get_data()
-    )
-    # """
+
     # Gray scale depth map based on the depth map with JET color map
     rs_depth_gray = cv.cvtColor(rs_depth_color, cv.COLOR_RGB2GRAY)
 
@@ -882,18 +923,22 @@ while True:
     # If is the first run...
     if first_run:
         # The shape of the lists to hold the last image and draw N lines
-        _shape = list(np.shape(rs_color_rgb))
-        _shape.insert(0, _NUM_LINES)
+        _shape = np.shape(rs_depth_color)
 
         # Array to hold the last N previous images. Removes the last
         # dimensions because this array will hold gray scale images
-        previous_images_gray = np.zeros(_shape[:-1], dtype=np.uint8)
+        previous_images_gray = np.zeros((_NUM_IMG, _shape[0], _shape[1]),
+                                        dtype=np.uint8)
 
         # The previous frame is equal to the current frame
         previous_images_gray[-1] = np.copy(rs_depth_gray)
 
+        # Sets the background as the first image (Assumption)
+        background = np.copy(rs_depth_gray)
+
         # Array to hold the last N masks
-        overlay = np.zeros(_shape, dtype=np.uint8)
+        overlay = np.zeros((_NUM_LINES, _shape[0], _shape[1], _shape[2]),
+                           dtype=np.uint8)
 
         # Sets the previous features as the new ones
         features_prev = cv.goodFeaturesToTrack(image=previous_images_gray[-1],
@@ -904,8 +949,8 @@ while True:
                                                blockSize=7,
                                                mask=None)
 
-        # mask = np.zeros(_shape[:-1], dtype=np.uint8)
-        masks = np.zeros(_shape[:-1], dtype=np.uint8)
+        # Initializes the mask array to hold the N previous masks
+        masks = np.zeros((_NUM_MASKS, _shape[0], _shape[1]), dtype=np.uint8)
 
         # Disable first_run flag
         first_run = False
@@ -913,9 +958,9 @@ while True:
     # Calculates sparse optical flow by Lucas-Kanade method
     # https://docs.opencv.org/3.0-beta/modules/video/doc/motion_analysis_and_object_tracking.html#calcopticalflowpyrlk
     features_next, status, error = cv.calcOpticalFlowPyrLK(
-        prevImg=previous_images_gray[-1],
+        prevImg=previous_images_gray[-1],  # NOQA
         nextImg=rs_depth_gray,
-        prevPts=features_prev,
+        prevPts=features_prev,  # NOQA
         nextPts=None,
         winSize=(15, 15),
         maxLevel=4,
@@ -928,10 +973,12 @@ while True:
     # Selects good feature points for next position
     features_next_good = features_next[status == 1]
 
-    cv.imshow("Prev - Next",
-              np.hstack((previous_images_gray[-1], rs_depth_gray)))
+    # Shows the previous and next image
+    # cv.imshow("Prev - Next",
+    #           np.hstack((previous_images_gray[-1], rs_depth_gray))
+    #           )
 
-    # A random line color per iteration/frame
+    # A random line color per iteration
     color = tuple(np.random.randint(0, 256, size=3).tolist())
 
     # Draws the optical flow tracks
@@ -955,10 +1002,10 @@ while True:
         # Draws filled circle (thickness of -1) at new position with green
         # color and radius of 3
         rs_depth_color = cv.circle(rs_depth_color, (a, b), 3, color, -1)
-        # Overlays the optical flow tracks on the original frame
 
     # Adds all the overlays and then adds it to the image to show
     output = cv.add(rs_depth_color, np.sum(overlay, axis=0, dtype=np.uint8))
+
     # Opens a new window and displays the output frame
     cv.imshow("Sparse Optical Flow (on Depth Image)", output)
 
@@ -966,61 +1013,48 @@ while True:
     overlay = np.roll(a=overlay, shift=-1, axis=0)
     overlay[-1] = np.zeros_like(overlay[-1])
 
-    # All processing is done here!
+    # All processing is done here! If Processing in all iterations set
+    # _MIN_ITER to 0.
     if _iter_count > _MIN_ITER:
-        # Average of N last images
-        previous_N_avg = np.rint(np.average(previous_images_gray,
-                                            axis=0)).astype(np.uint8)
+        if _BACKGROUND_TYPE == BackGroundTypes.AVERAGE:
+            # Average of N last images
+            previous_N_avg = np.rint(np.average(
+                previous_images_gray, axis=0
+            )).astype(np.uint8)
+        else:
+            previous_N_avg = background
 
-        # Absolute difference to compute the mask. (1 = compute interest
-        # points; 0 = ignore)
-
+        # Absolute difference to compute the last mask. (1 = compute; 0 =
+        # ignore)
         masks[-1] = abs(rs_depth_gray - previous_N_avg)
         masks[-1] = cv.threshold(src=masks[-1],
-                                thresh=0.6 * np.max(masks[-1]),
-                                maxval=1,
-                                type=cv.THRESH_BINARY)[1]
+                                 thresh=0.5 * np.max(masks[-1]),
+                                 maxval=1,
+                                 type=cv.THRESH_BINARY)[1]
 
-        mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
-        _show = np.copy(mask_avg)
-        _show[mask_avg >= 1] = 255
-
-        # FIXME The point in features_next_good seems to have a different
-        #  origin from the indexing
-        # """
-        # Sets the mask to 0 when this corresponds to an point that already
-        # exists
+        # Sets the last mask to 0 when this corresponds to an point that
+        # already exists
         _k_size = 3
         for (w, h) in features_next_good:
             w = np.rint(w).astype(np.uint)
             h = np.rint(h).astype(np.uint)
             try:
                 masks[-1][h - _k_size:h + _k_size, w - _k_size:w + _k_size] = 0
-                _show[h - _k_size:h + _k_size, w - _k_size:w + _k_size] = 65
             except IndexError:
                 masks[-1] = 0
-                _show[h, w] = 65
+
+        if _MASK_TYPE == MaskTypes.AVERAGE:
+            mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
+            mask_avg = cv.threshold(src=mask_avg,
+                                    thresh=0.5 * np.max(masks),
+                                    maxval=255,
+                                    type=cv.THRESH_BINARY)[1]
+        else:
+            mask_avg = np.sum(masks, axis=0).astype(np.uint8)
+            mask_avg[mask_avg > 1] = 1
 
         # Shows the mask
-        mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
-        mask_avg[mask_avg >= 1] = 1
-
-        """
-        mask[np.uint(np.rint(features_next_good[:, 1]) - _k_size):
-             np.uint(np.rint(features_next_good[:, 1]) + _k_size),
-             np.uint(np.rint(features_next_good[:, 0]) - _k_size):
-             np.uint(np.rint(features_next_good[:, 0]) + _k_size)] = \
-            np.zeros((_k_size+1, _k_size+1))
-
-        _show[np.uint(np.rint(features_next_good[:, 1]) - _k_size):
-              np.uint(np.rint(features_next_good[:, 1]) + _k_size),
-              np.uint(np.rint(features_next_good[:, 0]) - _k_size):
-              np.uint(np.rint(features_next_good[:, 0]) + _k_size)] = \
-             np.zeros((_k_size+1, _k_size+1))+65
-        """
-
-        # Shows the mask
-        cv.imshow("AVG - DIFF MASK", np.hstack((previous_N_avg, _show)))
+        cv.imshow("AVG - DIFF MASK", np.hstack((previous_N_avg, mask_avg)))
 
         # Get features to track using Shi-Tomasi Corner Detector
         features_current = cv.goodFeaturesToTrack(
@@ -1032,6 +1066,8 @@ while True:
             blockSize=7
         )
 
+        # Shifts the mask array to left and set the oldest element (now on
+        # right) to zeros.
         masks = np.roll(a=masks, shift=-1, axis=0)
         masks[-1] = np.zeros_like(masks[-1])
 
