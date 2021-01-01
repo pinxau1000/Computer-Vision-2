@@ -880,6 +880,7 @@ _NUM_MASKS = 4
 
 # Don't Touch! _iter_count is a counter!
 _iter_count = 0
+_people = 0
 # Main cycle/loop
 while True:
     # Read key and waits 1ms
@@ -1012,6 +1013,25 @@ while True:
     # Sift the overlay array to left and sets the last element to zeros
     overlay = np.roll(a=overlay, shift=-1, axis=0)
     overlay[-1] = np.zeros_like(overlay[-1])
+
+    mags = np.sqrt(
+        np.square(features_next_good[:,0] - features_prev_good[:,0]) +
+        np.square(features_next_good[:,1] - features_prev_good[:,1])
+    )
+
+    best_mags_idx = np.argmax(mags)
+
+    angs = np.arctan2(features_next_good[best_mags_idx,1] - features_prev_good[best_mags_idx,1],
+                      features_next_good[best_mags_idx,0] - features_prev_good[best_mags_idx,0])\
+           * 180 / np.pi
+
+
+    if best_mags_idx > 50:
+        if angs > 0:
+            _people -= 1
+        else:
+            _people += 1
+        print(_people)
 
     # All processing is done here! If Processing in all iterations set
     # _MIN_ITER to 0.
