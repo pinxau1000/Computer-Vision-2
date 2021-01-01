@@ -805,7 +805,8 @@ except RuntimeError as err:
     raise RuntimeError("Make sure the config streams exists in the device!")
 
 # Create colorizer object to apply to depth frames (JET Color Map)
-colorizer = rs.colorizer(0)
+colorizer_jet = rs.colorizer(7)
+colorizer_gray = rs.colorizer(2)
 
 # Get intrinsics and extrinsics parameters from the multiple profiles of
 # the pipeline
@@ -823,7 +824,13 @@ baseline = 0.05  # m
 # FLAG to enable the calculation of transform matrix on the first run
 first_run = True
 
-cv.namedWindow("Color - Depth Stream", cv.WINDOW_AUTOSIZE)
+cv.namedWindow("Color - Depth Stream", cv.WINDOW_KEEPRATIO)
+
+_iter_count = 0
+_MAX_FEATURES = 30
+_MIN_ITER = 0
+_QUALITY_LVL_SHITOMASI = 0.8
+_NUM_LINES = 10
 
 # Main cycle/loop
 while True:
@@ -833,92 +840,226 @@ while True:
     # Wait for new frames and grabs the frameset
     frameset = pipeline.wait_for_frames()
 
-    # RS435 Color Frame Object
-    color_frame = frameset.get_color_frame()
     # Get RGB Camera frame (Color)
-    rs_color_rgb = cv.cvtColor(np.asanyarray(color_frame.get_data()),
-                               cv.COLOR_BGR2RGB)
-    # Get RGB Camera frame (Gray)
-    rs_color_gray = cv.cvtColor(np.asanyarray(color_frame.get_data()),
-                                cv.COLOR_BGR2GRAY)
+    rs_color_rgb = cv.cvtColor(
+        np.asanyarray(frameset.get_color_frame().get_data()),
+        cv.COLOR_BGR2RGB
+    )
 
     # RS435 Depth Frame Object
     depth_frame = frameset.get_depth_frame()
     # Get Depth Frames with Color (JET Color Map)
-    rs_depth_color = np.asanyarray(colorizer.colorize(depth_frame).get_data())
-    # Get Depth Frames without Color (Used for distance calculation)
-    rs_depth = np.asanyarray(depth_frame.get_data())
+    rs_depth_color = np.asanyarray(
+        colorizer_jet.colorize(depth_frame).get_data()
+    )
+    """
+    # CAUTION: This gray scale depth map has 3 channels, and the 3 channels 
+    # have different values!
+    Get Depth Frames with Color (White Close - Black Far) 
+    rs_depth_gray = np.asanyarray(
+        colorizer_gray.colorize(depth_frame).get_data()
+    )
+    # """
+    # Gray scale depth map based on the depth map with JET color map
+    rs_depth_gray = cv.cvtColor(rs_depth_color, cv.COLOR_RGB2GRAY)
 
+    # Applies a filtering process to enhance the tracking
+    # FIXME: CHeck the best KSize or filtering process
+    # rs_depth_gray = cv.medianBlur(rs_depth_gray, 5)
+    rs_depth_gray = cv.GaussianBlur(rs_depth_gray, (5, 5), sigmaX=0, sigmaY=0)
+
+    # Copies the content of rs_depth_gray_2show to a var with 3 channels in
+    # order to show this image.
+    rs_depth_gray_2show = np.zeros_like(rs_depth_color)
+    rs_depth_gray_2show[:, :, 0] = rs_depth_gray
+    rs_depth_gray_2show[:, :, 1] = rs_depth_gray
+    rs_depth_gray_2show[:, :, 2] = rs_depth_gray
 
     # Render image in opencv window
-    cv.imshow("Color - Depth Stream", np.hstack((rs_color_rgb, rs_depth_color)))
+    cv.imshow("Color - Depth Stream", np.hstack((rs_color_rgb,
+                                                 rs_depth_gray_2show)))
 
+    # If is the first run...
     if first_run:
-        previous_gray = np.copy(rs_color_gray)
-        mask = np.zeros_like(rs_color_rgb)
-        features_prev = cv.goodFeaturesToTrack(image=previous_gray,
-                                               maxCorners=300,
-                                               qualityLevel=0.2,
+        # The shape of the lists to hold the last image and draw N lines
+        _shape = list(np.shape(rs_color_rgb))
+        _shape.insert(0, _NUM_LINES)
+
+        # Array to hold the last N previous images. Removes the last
+        # dimensions because this array will hold gray scale images
+        previous_images_gray = np.zeros(_shape[:-1], dtype=np.uint8)
+
+        # The previous frame is equal to the current frame
+        previous_images_gray[-1] = np.copy(rs_depth_gray)
+
+        # Array to hold the last N masks
+        overlay = np.zeros(_shape, dtype=np.uint8)
+
+        # Sets the previous features as the new ones
+        features_prev = cv.goodFeaturesToTrack(image=previous_images_gray[-1],
+                                               # NOQA
+                                               maxCorners=_MAX_FEATURES,
+                                               qualityLevel=_QUALITY_LVL_SHITOMASI,
                                                minDistance=2,
                                                blockSize=7,
                                                mask=None)
+
+        # mask = np.zeros(_shape[:-1], dtype=np.uint8)
+        masks = np.zeros(_shape[:-1], dtype=np.uint8)
+
+        # Disable first_run flag
         first_run = False
 
     # Calculates sparse optical flow by Lucas-Kanade method
     # https://docs.opencv.org/3.0-beta/modules/video/doc/motion_analysis_and_object_tracking.html#calcopticalflowpyrlk
     features_next, status, error = cv.calcOpticalFlowPyrLK(
-        prevImg=previous_gray,
-        nextImg=rs_color_gray,
+        prevImg=previous_images_gray[-1],
+        nextImg=rs_depth_gray,
         prevPts=features_prev,
         nextPts=None,
         winSize=(15, 15),
-        maxLevel=2,
+        maxLevel=4,
         criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03)
     )
 
     # Selects good feature points for previous position
-    good_prev = features_prev[status == 1]
+    features_prev_good = features_prev[status == 1]
 
     # Selects good feature points for next position
-    good_next = features_next[status == 1]
+    features_next_good = features_next[status == 1]
+
+    cv.imshow("Prev - Next",
+              np.hstack((previous_images_gray[-1], rs_depth_gray)))
 
     # A random line color per iteration/frame
-    color = (int(np.random.randint(0, 256, dtype=np.uint8)),
-             int(np.random.randint(0, 256, dtype=np.uint8)),
-             int(np.random.randint(0, 256, dtype=np.uint8)))
+    color = tuple(np.random.randint(0, 256, size=3).tolist())
 
     # Draws the optical flow tracks
-    for i, (new, old) in enumerate(zip(good_next, good_prev)):
-        # Returns a contiguous flattened array as (x, y) coordinates for new point
+    for i, (new, old) in enumerate(zip(features_next_good, features_prev_good)):
+        # Returns a contiguous flattened array as (x, y) coordinates for new
+        # point
         a, b = new.ravel()
-        # Returns a contiguous flattened array as (x, y) coordinates for old point
+        # Returns a contiguous flattened array as (x, y) coordinates for old
+        # point
         c, d = old.ravel()
-        # Draws line between new and old position with green color and 2 thickness
-        mask = cv.line(mask, (a, b), (c, d), color, 2)
-        # Draws filled circle (thickness of -1) at new position with green color and radius of 3
-        rs_color_rgb = cv.circle(rs_color_rgb, (a, b), 3, color, -1)
+
+        # Draws line between new and old position with green color and 2
+        # thickness. The new image (with lines) is drawn on a blank array and
+        # sets the last element of the overlays list. This is done so that we
+        # only view the last N lines.
+        overlay[-1] = cv.line(img=overlay[-1],
+                              pt1=(a, b),
+                              pt2=(c, d),
+                              color=color,
+                              thickness=2)
+        # Draws filled circle (thickness of -1) at new position with green
+        # color and radius of 3
+        rs_depth_color = cv.circle(rs_depth_color, (a, b), 3, color, -1)
         # Overlays the optical flow tracks on the original frame
 
-    output = cv.add(rs_color_rgb, mask)
-
-    features_prev = cv.goodFeaturesToTrack(image=previous_gray,
-                                           maxCorners=300,
-                                           qualityLevel=0.8,
-                                           minDistance=2,
-                                           blockSize=7,
-                                           mask=None)
-
-    # Updates previous good feature points
-    features_prev = np.vstack((good_next.reshape(-1, 1, 2), features_prev))
-
-    if len(features_prev) > 30:
-        features_prev = features_prev[:30,:,:]
-
-    # Updates previous gray frame
-    previous_gray = np.copy(rs_color_gray)
-
+    # Adds all the overlays and then adds it to the image to show
+    output = cv.add(rs_depth_color, np.sum(overlay, axis=0, dtype=np.uint8))
     # Opens a new window and displays the output frame
-    cv.imshow("sparse optical flow", output)
+    cv.imshow("Sparse Optical Flow (on Depth Image)", output)
+
+    # Sift the overlay array to left and sets the last element to zeros
+    overlay = np.roll(a=overlay, shift=-1, axis=0)
+    overlay[-1] = np.zeros_like(overlay[-1])
+
+    # All processing is done here!
+    if _iter_count > _MIN_ITER:
+        # Average of N last images
+        previous_N_avg = np.rint(np.average(previous_images_gray,
+                                            axis=0)).astype(np.uint8)
+
+        # Absolute difference to compute the mask. (1 = compute interest
+        # points; 0 = ignore)
+
+        masks[-1] = abs(rs_depth_gray - previous_N_avg)
+        masks[-1] = cv.threshold(src=masks[-1],
+                                thresh=0.6 * np.max(masks[-1]),
+                                maxval=1,
+                                type=cv.THRESH_BINARY)[1]
+
+        mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
+        _show = np.copy(mask_avg)
+        _show[mask_avg >= 1] = 255
+
+        # FIXME The point in features_next_good seems to have a different
+        #  origin from the indexing
+        # """
+        # Sets the mask to 0 when this corresponds to an point that already
+        # exists
+        _k_size = 3
+        for (w, h) in features_next_good:
+            w = np.rint(w).astype(np.uint)
+            h = np.rint(h).astype(np.uint)
+            try:
+                masks[-1][h - _k_size:h + _k_size, w - _k_size:w + _k_size] = 0
+                _show[h - _k_size:h + _k_size, w - _k_size:w + _k_size] = 65
+            except IndexError:
+                masks[-1] = 0
+                _show[h, w] = 65
+
+        # Shows the mask
+        mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
+        mask_avg[mask_avg >= 1] = 1
+
+        """
+        mask[np.uint(np.rint(features_next_good[:, 1]) - _k_size):
+             np.uint(np.rint(features_next_good[:, 1]) + _k_size),
+             np.uint(np.rint(features_next_good[:, 0]) - _k_size):
+             np.uint(np.rint(features_next_good[:, 0]) + _k_size)] = \
+            np.zeros((_k_size+1, _k_size+1))
+
+        _show[np.uint(np.rint(features_next_good[:, 1]) - _k_size):
+              np.uint(np.rint(features_next_good[:, 1]) + _k_size),
+              np.uint(np.rint(features_next_good[:, 0]) - _k_size):
+              np.uint(np.rint(features_next_good[:, 0]) + _k_size)] = \
+             np.zeros((_k_size+1, _k_size+1))+65
+        """
+
+        # Shows the mask
+        cv.imshow("AVG - DIFF MASK", np.hstack((previous_N_avg, _show)))
+
+        # Get features to track using Shi-Tomasi Corner Detector
+        features_current = cv.goodFeaturesToTrack(
+            image=rs_depth_gray,
+            maxCorners=_MAX_FEATURES - len(features_next_good),
+            qualityLevel=_QUALITY_LVL_SHITOMASI,
+            minDistance=2,
+            mask=mask_avg,
+            blockSize=7
+        )
+
+        masks = np.roll(a=masks, shift=-1, axis=0)
+        masks[-1] = np.zeros_like(masks[-1])
+
+        # If there is some features found (not None)
+        if features_current is not None:
+            features_prev = np.vstack((
+                features_next_good.reshape(-1, 1, 2), features_current
+            ))
+        # If its None then just do the usual...
+        else:
+            features_prev = features_next_good.reshape(-1, 1, 2)
+
+        # Retains only N features (Don't forget the features are ordered by
+        # ascending quality!)
+        if len(features_prev) > _MAX_FEATURES:
+            features_prev = features_prev[:_MAX_FEATURES, :, :]
+
+        # Increase Counter
+        _iter_count = 0
+    else:
+        # Usual
+        features_prev = features_next_good.reshape(-1, 1, 2)
+
+    # Updates the last frame from the array
+    previous_images_gray = np.roll(a=previous_images_gray, shift=-1, axis=0)
+    previous_images_gray[-1] = np.copy(rs_depth_gray)
+
+    _iter_count += 1
 
     # if pressed ESCAPE exit program
     if key == 27:
