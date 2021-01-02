@@ -790,6 +790,8 @@ class BackGroundTypes(IntEnum):
     BACKGROUND = 0
     AVG = 1
     AVERAGE = 1
+
+
 # endregion
 
 
@@ -841,13 +843,15 @@ first_run = True
 # Creates a window to show color and depth stream
 cv.namedWindow("Color - Depth Stream", cv.WINDOW_KEEPRATIO)
 
+# Maximum features that cv.goodFeaturesToTrack retrieve. (Shi-Tomasi Corner
+# Detector)
 _MAX_FEATURES = 60
 
 # Minimum iterations to search for new features. If 0 then always search.
-_MIN_ITER = 1
+_MIN_ITER = 0
 
 # SHI TOMASI Feature Detector Quality Level
-_QUALITY_LVL_SHITOMASI = 0.8
+_QUALITY_LVL_SHITOMASI = 0.2
 
 # Number of lines to retain in the image presented to the user for each keypoint
 _NUM_LINES = 4
@@ -877,6 +881,17 @@ _NUM_IMG = 4
 # The mask is computed with the background type defined above.
 _MASK_TYPE = MaskTypes.AVG
 _NUM_MASKS = 4
+
+# _ROI = [[Minimum Height, Maximum Height],
+#         [Minimum Width, Maximum Width]]
+# Example: _ROI = [[120, 360], [212, 636]]
+# If _ROI = None then its set to be all the image.
+_ROI = [[240, 360], [280, 540]]
+
+_MIN_MAG = 60
+_MIN_ANG = 30
+_MAG_N_AVG = 10
+_ANG_N_AVG = 2
 
 # Don't Touch! _iter_count is a counter!
 _iter_count = 0
@@ -937,9 +952,18 @@ while True:
         # Sets the background as the first image (Assumption)
         background = np.copy(rs_depth_gray)
 
-        # Array to hold the last N masks
+        # Array to hold the last N overlays (To insert on top of the depth
+        # image so we can visualize the tracking)
         overlay = np.zeros((_NUM_LINES, _shape[0], _shape[1], _shape[2]),
                            dtype=np.uint8)
+
+        # Initializes the mask so that it corresponds to the Region of Interest
+        if np.shape(_ROI) == (2, 2):
+            mask = np.zeros((_shape[0], _shape[1]), dtype=np.uint8)
+            mask[_ROI[0][0]:_ROI[0][1], _ROI[1][0]:_ROI[1][1]] = 1
+        else:
+            _ROI = [[0, _shape[0]], [0, _shape[1]]]
+            mask = None
 
         # Sets the previous features as the new ones
         features_prev = cv.goodFeaturesToTrack(image=previous_images_gray[-1],
@@ -948,10 +972,16 @@ while True:
                                                qualityLevel=_QUALITY_LVL_SHITOMASI,
                                                minDistance=2,
                                                blockSize=7,
-                                               mask=None)
+                                               mask=mask)
 
         # Initializes the mask array to hold the N previous masks
         masks = np.zeros((_NUM_MASKS, _shape[0], _shape[1]), dtype=np.uint8)
+
+        # Initializes the best magnitudes and angles array to hold the N
+        # (_MAG_N_AVG and _ANG_N_AVG) previous best 4 magnitudes and angle
+        # values. Used to compute the average of the angle and magnitude.
+        best_mags = np.zeros((_MAG_N_AVG, 4))
+        best_angs = np.zeros((_ANG_N_AVG, 4))
 
         # Disable first_run flag
         first_run = False
@@ -1004,6 +1034,22 @@ while True:
         # color and radius of 3
         rs_depth_color = cv.circle(rs_depth_color, (a, b), 3, color, -1)
 
+        # Draws a rectangle around the Region of Interest (ROI)
+        rs_depth_color = cv.rectangle(img=rs_depth_color,
+                                      pt1=tuple([_ROI[1][0], _ROI[0][0]]),
+                                      pt2=tuple([_ROI[1][1], _ROI[0][1]]),
+                                      color=(0, 255, 0),
+                                      thickness=3)
+
+        # Draws text showing the number of people inside the room
+        rs_depth_color = cv.putText(img=rs_depth_color,
+                                    text="People: " + str(_people),
+                                    org=(5, _shape[0] - 5),
+                                    fontFace=cv.FONT_HERSHEY_SIMPLEX,
+                                    fontScale=1,
+                                    color=(0, 255, 0),
+                                    thickness=3)
+
     # Adds all the overlays and then adds it to the image to show
     output = cv.add(rs_depth_color, np.sum(overlay, axis=0, dtype=np.uint8))
 
@@ -1014,24 +1060,55 @@ while True:
     overlay = np.roll(a=overlay, shift=-1, axis=0)
     overlay[-1] = np.zeros_like(overlay[-1])
 
+    # Computes the magnitude for all group of points (Line between previous and
+    # next points)
     mags = np.sqrt(
-        np.square(features_next_good[:,0] - features_prev_good[:,0]) +
-        np.square(features_next_good[:,1] - features_prev_good[:,1])
+        np.square(features_next_good[:, 0] - features_prev_good[:, 0]) +
+        np.square(features_next_good[:, 1] - features_prev_good[:, 1])
     )
 
-    best_mags_idx = np.argmax(mags)
-
-    angs = np.arctan2(features_next_good[best_mags_idx,1] - features_prev_good[best_mags_idx,1],
-                      features_next_good[best_mags_idx,0] - features_prev_good[best_mags_idx,0])\
+    # Computes the angle for all group of points (Line between previous and
+    # next points)
+    angs = np.arctan2(features_next_good[:, 1] - features_prev_good[:, 1],
+                      features_next_good[:, 0] - features_prev_good[:, 0]) \
            * 180 / np.pi
 
+    # Sorts the magnitudes in ascending order and grabs the best 4 magnitudes.
+    # Thee best magnitudes are added to an array to compute the average of
+    # the N sets of best magnitudes.
+    best_mags[-1] = np.sort(mags)[-4:]
 
-    if best_mags_idx > 50:
-        if angs > 0:
+    # Sorts the magnitudes in ascending order, gets the index of best 4
+    # magnitudes and gets the angles corresponding to those best magnitudes.
+    best_angs[-1] = angs[np.argsort(mags)[-4:]]
+
+    # Computes the average of the angle and the magnitude
+    best_mags_avg = np.average(best_mags)
+    best_angs_avg = np.average(best_angs)
+
+    # If the average magnitude (of the best N magnitudes) is high then some
+    # big displacement happened
+    if best_mags_avg > _MIN_MAG:
+        # Check if the angle to determine the direction of the displacement
+        if 90 - _MIN_ANG < best_angs_avg < 90 + _MIN_ANG:
             _people -= 1
-        else:
+            # Zeros the N best magnitudes and angles arrays so that a high
+            # peek need to be reached again to count the people.
+            best_mags = np.zeros((8, 4))
+            best_angs = np.zeros((4, 4))
+        elif -90 - _MIN_ANG < best_angs_avg < -90 + _MIN_ANG:
             _people += 1
-        print(_people)
+            # Zeros the N best magnitudes and angles arrays so that a high
+            # peek need to be reached again to count the people.
+            best_mags = np.zeros((8, 4))
+            best_angs = np.zeros((4, 4))
+
+    # Shifts the best magnitudes and angles array so that the last element is
+    # the oldest one and zeros that element.
+    best_mags = np.roll(a=best_mags, shift=-1, axis=0)
+    best_angs = np.roll(a=best_angs, shift=-1, axis=0)
+    best_mags[-1] = np.zeros_like(best_mags[-1])
+    best_angs[-1] = np.zeros_like(best_angs[-1])
 
     # All processing is done here! If Processing in all iterations set
     # _MIN_ITER to 0.
@@ -1044,9 +1121,13 @@ while True:
         else:
             previous_N_avg = background
 
-        # Absolute difference to compute the last mask. (1 = compute; 0 =
-        # ignore)
-        masks[-1] = abs(rs_depth_gray - previous_N_avg)
+        # Absolute difference to compute the last mask (1 = compute;
+        # 0 = ignore). The mask takes into account the region of interest!
+        masks[-1][_ROI[0][0]:_ROI[0][1], _ROI[1][0]:_ROI[1][1]] = \
+            abs(rs_depth_gray[_ROI[0][0]:_ROI[0][1], _ROI[1][0]:_ROI[1][1]] -
+                previous_N_avg[_ROI[0][0]:_ROI[0][1], _ROI[1][0]:_ROI[1][1]])
+
+        # Converts the mask to binary.
         masks[-1] = cv.threshold(src=masks[-1],
                                  thresh=0.5 * np.max(masks[-1]),
                                  maxval=1,
@@ -1067,14 +1148,20 @@ while True:
             mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
             mask_avg = cv.threshold(src=mask_avg,
                                     thresh=0.5 * np.max(masks),
-                                    maxval=255,
+                                    maxval=1,
                                     type=cv.THRESH_BINARY)[1]
         else:
             mask_avg = np.sum(masks, axis=0).astype(np.uint8)
-            mask_avg[mask_avg > 1] = 1
+            mask_avg[mask_avg >= 1] = 1
 
-        # Shows the mask
-        cv.imshow("AVG - DIFF MASK", np.hstack((previous_N_avg, mask_avg)))
+        # Shows the Last N Images
+        cv.imshow("N LAST IMAGES", previous_N_avg)
+
+        # Remaps the 1 to 255 so we can visualize the mask
+        _show = mask_avg
+        _show[mask_avg == 1] = 255
+        # Shows the Mask
+        cv.imshow("MASK", _show)
 
         # Get features to track using Shi-Tomasi Corner Detector
         features_current = cv.goodFeaturesToTrack(
