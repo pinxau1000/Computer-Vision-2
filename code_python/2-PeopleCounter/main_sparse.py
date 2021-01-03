@@ -194,9 +194,9 @@ class BackGroundTypes(IntEnum):
 # ------------------------------------------------------------------------------
 path = os.path.join("..", "..", "data", "CV_D435_20201104_162148.bag")
 
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+timestamp = "_" + datetime.now().strftime('%Y%m%d_%H%M%S')
 # timestamp = ""
-csv_path = os.path.join(f"sparse_ppl_counter_{timestamp}.csv")
+csv_path = os.path.join(f"sparse_ppl_counter{timestamp}.csv")
 create_csv(csv_path)
 
 # Creates a Real Sense Pipeline Object
@@ -224,7 +224,8 @@ colorizer_qntz = rs.colorizer(7)  # Quantized
 colorizer_gray = rs.colorizer(2)  # WhiteToBlack
 
 # Creates a window to show color and depth stream
-cv.namedWindow("Sparse Optical Flow (on Depth Image)", cv.WINDOW_KEEPRATIO)
+cv.namedWindow("Sparse Optical Flow (on Depth Image)",
+               cv.WINDOW_KEEPRATIO + cv.WINDOW_AUTOSIZE)
 
 # Maximum features that cv.goodFeaturesToTrack retrieve. (Shi-Tomasi Corner
 # Detector)
@@ -267,19 +268,19 @@ NUM_MASKS = 4
 
 # ROI: Region Of Interest. The region of interest where the new keypoints are
 # generated/searched using cv.goodFeaturesToTrack.
-# _ROI_NEW_FEATURES = [[Minimum Height, Maximum Height],
-#         [Minimum Width, Maximum Width]]
-# Example: _ROI = [[120, 360], [212, 636]]
-# If _ROI_NEW_FEATURES = None then its set to be all the image.
+# ROI_NEW_FEATURES = [[Minimum Height, Maximum Height],
+#                     [Minimum Width, Maximum Width]]
+# Example: ROI_NEW_FEATURES = [[120, 360], [212, 636]]
+# If ROI_NEW_FEATURES = None then its set to be all the image.
 ROI_NEW_FEATURES = [[260, 360], [300, 630]]
 
 # ROI: Region Of Interest. The region of interest where the keypoints that
 # are tracked via cv.calcOpticalFlowPyrLK are maintained. The keypoints
 # outside this region are discarded.
-# _ROI_FEATURE_TRACKING = [[Minimum Height, Maximum Height],
-#         [Minimum Width, Maximum Width]]
-# Example: _ROI = [[0, 480], [212, 636]]
-# If _ROI_FEATURE_TRACKING[0][1] or _ROI_FEATURE_TRACKING[1][1] is None then
+# ROI_FEATURE_TRACKING = [[Minimum Height, Maximum Height],
+#                         [Minimum Width, Maximum Width]]
+# Example: ROI_FEATURE_TRACKING = [[0, 480], [212, 636]]
+# If ROI_FEATURE_TRACKING[0][1] or ROI_FEATURE_TRACKING[1][1] is None then
 # that element is set to the maximum height and width respectively.
 ROI_FEATURE_TRACKING = [[200, 420], [310, 620]]
 
@@ -564,16 +565,16 @@ while True:
             write2csv(f_path=csv_path, number=_people, in_out="out")
             # Zeros the N best magnitudes and angles arrays so that a high
             # peek need to be reached again to count the people.
-            best_mags = np.zeros((8, 4))
-            best_angs = np.zeros((4, 4))
+            best_mags = np.zeros((MAG_N_AVG, 4))
+            best_angs = np.zeros((ANG_N_AVG, 4))
         elif -90 - MIN_ANG < best_angs_avg < -90 + MIN_ANG:
             _people += 1
             # Writes data to CSV
             write2csv(f_path=csv_path, number=_people, in_out="in")
             # Zeros the N best magnitudes and angles arrays so that a high
             # peek need to be reached again to count the people.
-            best_mags = np.zeros((8, 4))
-            best_angs = np.zeros((4, 4))
+            best_mags = np.zeros((MAG_N_AVG, 4))
+            best_angs = np.zeros((ANG_N_AVG, 4))
 
     # Shifts the best magnitudes and angles array so that the last element is
     # the oldest one and zeros that element.

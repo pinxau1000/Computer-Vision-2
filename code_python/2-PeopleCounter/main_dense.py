@@ -240,6 +240,10 @@ ANG_N_AVG = 4
 _first_run = True
 # Don't Touch! _people is a counter!
 _people = 0
+
+cv.namedWindow("Last - N Avg", cv.WINDOW_KEEPRATIO + cv.WINDOW_AUTOSIZE)
+cv.namedWindow("Dense Optical Flow", cv.WINDOW_KEEPRATIO + cv.WINDOW_AUTOSIZE)
+
 # Main cycle/loop
 while True:
     # Read key and waits 1ms
@@ -422,7 +426,7 @@ while True:
     # Sets the overlay (Dense Flow) to the render image
     render[ROI[0][0]:ROI[0][1], ROI[1][0]:ROI[1][1], :] = overlay
     # Opens a new window and displays the output frame
-    cv.imshow("dense optical flow", render)
+    cv.imshow("Dense Optical Flow", render)
 
     # Updates the last frame from the array
     prev_imgs_gray = np.roll(a=prev_imgs_gray, shift=-1, axis=0)
