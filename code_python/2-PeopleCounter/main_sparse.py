@@ -4,10 +4,14 @@
 # ------------------------------------------------------------------------------
 import os
 from enum import IntEnum
+from datetime import datetime
+import csv
 
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
 import numpy as np
+
+
 # endregion
 
 
@@ -146,10 +150,27 @@ def rs_config_depth_pipeline(config_rs: rs.config,
 
 # endregion
 
-# region Classes
+# region People Counter Functions & Classes
 # ------------------------------------------------------------------------------
 #                       People Counter Functions & Classes
 # ------------------------------------------------------------------------------
+def create_csv(f_path):
+    _now = datetime.now()
+    with open(f_path, mode='w', newline='') as csv_f:
+        csv_file = csv.writer(csv_f)
+        csv_file.writerow(
+            ['# Group X', '2190383', 'Jose Rosa', '2192447', 'Ricardo Silva']
+        )
+        csv_file.writerow([_now.strftime("%H:%M:%S"), 'none', 0])
+
+
+def write2csv(f_path, number, in_out):
+    _now = datetime.now()
+    with open(f_path, mode='a', newline='') as csv_f:
+        csv_file = csv.writer(csv_f)
+        csv_file.writerow([_now.strftime("%H:%M:%S"), in_out, number])
+
+
 class MaskTypes(IntEnum):
     SUM = 1
     ANY = 1
@@ -173,6 +194,11 @@ class BackGroundTypes(IntEnum):
 # ------------------------------------------------------------------------------
 path = os.path.join("..", "..", "data", "CV_D435_20201104_162148.bag")
 
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+# timestamp = ""
+csv_path = os.path.join(f"sparse_ppl_counter_{timestamp}.csv")
+create_csv(csv_path)
+
 # Creates a Real Sense Pipeline Object
 pipeline = rs.pipeline(ctx=rs.context())
 
@@ -193,12 +219,12 @@ except RuntimeError as err:
     print(err)
     raise RuntimeError("Make sure the config streams exists in the device!")
 
-# Create colorizer object to apply to depth frames (JET Color Map)
-colorizer_jet = rs.colorizer(7)
-colorizer_gray = rs.colorizer(2)
+# Create colorizer object to apply to depth frames
+colorizer_qntz = rs.colorizer(7)  # Quantized
+colorizer_gray = rs.colorizer(2)  # WhiteToBlack
 
 # Creates a window to show color and depth stream
-cv.namedWindow("Color - Depth Stream", cv.WINDOW_KEEPRATIO)
+cv.namedWindow("Sparse Optical Flow (on Depth Image)", cv.WINDOW_KEEPRATIO)
 
 # Maximum features that cv.goodFeaturesToTrack retrieve. (Shi-Tomasi Corner
 # Detector)
@@ -255,7 +281,7 @@ ROI_NEW_FEATURES = [[260, 360], [300, 630]]
 # Example: _ROI = [[0, 480], [212, 636]]
 # If _ROI_FEATURE_TRACKING[0][1] or _ROI_FEATURE_TRACKING[1][1] is None then
 # that element is set to the maximum height and width respectively.
-ROI_FEATURE_TRACKING = [[195, 420], [310, 620]]
+ROI_FEATURE_TRACKING = [[200, 420], [310, 620]]
 
 # Minimum magnitude needed to check if angle and computes the number of persons
 MIN_MAG = 50
@@ -290,35 +316,19 @@ while True:
     # Wait for new frames and grabs the frameset
     frameset = pipeline.wait_for_frames()
 
-    # Get RGB Camera frame (Color)
-    rs_color_rgb = cv.cvtColor(
-        np.asanyarray(frameset.get_color_frame().get_data()),
-        cv.COLOR_BGR2RGB
-    )
-
     # RS435 Depth Frame Object
     depth_frame = frameset.get_depth_frame()
-    # Get Depth Frames with Color (JET Color Map)
+
+    # Get Depth Frames with Color (Quantized Color Map)
     rs_depth_color = np.asanyarray(
-        colorizer_jet.colorize(depth_frame).get_data()
+        colorizer_qntz.colorize(depth_frame).get_data()
     )
 
-    # Gray scale depth map based on the depth map with JET color map
+    # Gray scale depth map based on the depth map with Quantized Color Map
     rs_depth_gray = cv.cvtColor(rs_depth_color, cv.COLOR_RGB2GRAY)
 
     # Applies a filtering process to enhance the tracking
     rs_depth_gray = cv.GaussianBlur(rs_depth_gray, (5, 5), sigmaX=0, sigmaY=0)
-
-    # Copies the content of rs_depth_gray_2show to a var with 3 channels in
-    # order to show this image.
-    rs_depth_gray_2show = np.zeros_like(rs_depth_color)
-    rs_depth_gray_2show[:, :, 0] = rs_depth_gray
-    rs_depth_gray_2show[:, :, 1] = rs_depth_gray
-    rs_depth_gray_2show[:, :, 2] = rs_depth_gray
-
-    # Render image in opencv window
-    cv.imshow("Color - Depth Stream", np.hstack((rs_color_rgb,
-                                                 rs_depth_gray_2show)))
 
     # If is the first run...
     if _first_run:
@@ -345,10 +355,8 @@ while True:
         # Interest for creation of new keypoints
         if np.shape(ROI_NEW_FEATURES) == (2, 2):
             mask = np.zeros((_shape[0], _shape[1]), dtype=np.uint8)
-            mask[
-                ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
-                ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]
-            ] = 1
+            mask[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
+                 ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] = 1
         else:
             ROI_NEW_FEATURES = [[0, _shape[0]], [0, _shape[1]]]
             mask = None
@@ -552,12 +560,16 @@ while True:
         # Check if the angle to determine the direction of the displacement
         if 90 - MIN_ANG < best_angs_avg < 90 + MIN_ANG:
             _people -= 1
+            # Writes data to CSV
+            write2csv(f_path=csv_path, number=_people, in_out="out")
             # Zeros the N best magnitudes and angles arrays so that a high
             # peek need to be reached again to count the people.
             best_mags = np.zeros((8, 4))
             best_angs = np.zeros((4, 4))
         elif -90 - MIN_ANG < best_angs_avg < -90 + MIN_ANG:
             _people += 1
+            # Writes data to CSV
+            write2csv(f_path=csv_path, number=_people, in_out="in")
             # Zeros the N best magnitudes and angles arrays so that a high
             # peek need to be reached again to count the people.
             best_mags = np.zeros((8, 4))
@@ -618,13 +630,13 @@ while True:
             mask_avg[mask_avg >= 1] = 1
 
         # Shows the Last N Images
-        cv.imshow("N LAST IMAGES", previous_N_avg)
+        # cv.imshow("N LAST IMAGES", previous_N_avg)
 
         # Remaps the 1 to 255 so we can visualize the mask
-        _show = mask_avg
-        _show[mask_avg == 1] = 255
+        # _show = mask_avg
+        # _show[mask_avg == 1] = 255
         # Shows the Mask
-        cv.imshow("MASK", _show)
+        # cv.imshow("MASK", _show)
 
         # Get features to track using Shi-Tomasi Corner Detector
         features_current = cv.goodFeaturesToTrack(
@@ -666,7 +678,6 @@ while True:
     previous_images_gray[-1] = np.copy(rs_depth_gray)
 
     _iter_count += 1
-
     # if pressed ESCAPE exit program
     if key == 27:
         cv.destroyAllWindows()
