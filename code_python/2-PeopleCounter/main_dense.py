@@ -192,9 +192,9 @@ class BackGroundTypes(IntEnum):
 # ------------------------------------------------------------------------------
 path = os.path.join("..", "..", "data", "CV_D435_20201104_162148.bag")
 
-# timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+# timestamp = "_" + datetime.now().strftime('%Y%m%d_%H%M%S')
 timestamp = ""
-csv_path = os.path.join(f"dense_ppl_counter_{timestamp}.csv")
+csv_path = os.path.join(f"dense_ppl_counter{timestamp}.csv")
 create_csv(csv_path)
 
 # Creates a Real Sense Pipeline Object
@@ -221,12 +221,25 @@ except RuntimeError as err:
 colorizer_qntz = rs.colorizer(7)  # Quantized
 colorizer_gray = rs.colorizer(2)  # WhiteToBlack
 
-# Creates a window to show color and depth stream
-cv.namedWindow("Color - Depth Stream", cv.WINDOW_KEEPRATIO)
+# ROI: Region Of Interest. The region of interest where dense optical flow is
+# computed using Gunnar Farneback's algorithm.
+# ROI = [[Minimum Height, Maximum Height],
+#        [Minimum Width, Maximum Width]]
+# Example: ROI = [[0, None], [212, 636]]
+# If ROI[0][1] or ROI[1][1] is None then that element is set to the maximum
+# height and width respectively.
+ROI = [[180, 420], [212, 706]]
+
+NUM_IMG = 1
+MIN_ANG = 45
+MIN_MAG = 35
+MAG_N_AVG = 4
+ANG_N_AVG = 4
 
 # Don't Touch! first_run is a flag!
 _first_run = True
-
+# Don't Touch! _people is a counter!
+_people = 0
 # Main cycle/loop
 while True:
     # Read key and waits 1ms
@@ -245,16 +258,185 @@ while True:
     # Gray scale depth map based on the depth map with Quantized Color Map
     rs_depth_gray = cv.cvtColor(rs_depth_color, cv.COLOR_RGB2GRAY)
 
-    # Applies a filtering process to enhance the tracking
-    rs_depth_gray = cv.GaussianBlur(rs_depth_gray, (5, 5), sigmaX=0, sigmaY=0)
-
     # If is the first run...
     if _first_run:
         # The shape of the lists to hold the last image and draw N lines
         _shape = np.shape(rs_depth_color)
 
+        # Initializes the Region of Interest of tracking
+        if np.shape(ROI) == (2, 2):
+            if ROI[0][1] is None:
+                ROI[0][1] = _shape[0]
+            if ROI[1][1] is None:
+                ROI[1][1] = _shape[1]
+
+            if any(ROI) is None:
+                raise ValueError("_ROI_FEATURE_TRACKING can only contain None "
+                                 "elements at index [0][1] and [1][1]. "
+                                 "example: _ROI_FEATURE_TRACKING = [[0, "
+                                 "None], [0, None]].")
+        else:
+            ROI = [[0, _shape[0]], [0, _shape[1]]]
+
+        # Array to hold the last N previous images. Removes the last
+        # dimensions because this array will hold gray scale images
+        prev_imgs_gray = np.zeros((NUM_IMG,
+                                   ROI[0][1] - ROI[0][0],
+                                   ROI[1][1] - ROI[1][0]),
+                                  dtype=np.uint8)
+
+        # The previous frame is equal to the current frame
+        prev_imgs_gray[-1] = np.copy(
+            rs_depth_gray[ROI[0][0]:ROI[0][1], ROI[1][0]:ROI[1][1]]
+        )
+
+        # Array to hold the last overlay (To insert on top of the depth image
+        # so we can visualize the dense optical flow)
+        overlay = np.zeros((ROI[0][1] - ROI[0][0],
+                            ROI[1][1] - ROI[1][0],
+                            _shape[2]), dtype=np.uint8)
+        # Sets image overlay saturation to maximum (Using HSV)
+        overlay[:, :, 1] = 255
+
+        # Creates the mask to display the optical flow on top of the full
+        # size image
+        mask = np.zeros(_shape)
+        mask[ROI[0][0]:ROI[0][1], ROI[1][0]:ROI[1][1], :] = 1
+
+        # Array to hold the last N previous images.
+        imgs_color = np.zeros((NUM_IMG,
+                               _shape[0],
+                               _shape[1],
+                               _shape[2]), dtype=np.uint8)
+
+        # Adds current image to the array
+        imgs_color[-1] = np.copy(rs_depth_color)
+
+        """
+        # Initializes the magnitudes array. This is needed so that the image
+        # displayed corresponds to the N previous magnitudes
+        mags = np.zeros((NUM_IMG,
+                         ROI[0][1] - ROI[0][0],
+                         ROI[1][1] - ROI[1][0]), dtype=np.float)
+
+        # Initializes the angles array. This is needed so that the image
+        #         # displayed corresponds to the N previous magnitudes
+        angs = np.zeros((NUM_IMG,
+                         ROI[0][1] - ROI[0][0],
+                         ROI[1][1] - ROI[1][0]), dtype=np.float)
+        """
+
+        # Initilizes the bests arrays, that hold the best 4 magnitudes and
+        # angles.
+        _n_best = 4
+        best_mags = np.zeros((MAG_N_AVG, _n_best), dtype=np.float)
+        best_angs = np.zeros((ANG_N_AVG, _n_best), dtype=np.float)
+
         # Disable first_run flag
         _first_run = False
+
+    # Computes the last N images average
+    prev_N_gray_avg = np.rint(np.average(prev_imgs_gray, axis=0)).astype(
+        np.uint8)
+
+    # Crops the next image
+    next_img_gray = rs_depth_gray[ROI[0][0]:ROI[0][1], ROI[1][0]:ROI[1][1]]
+
+    # Opens a new window and displays the output frame
+    cv.imshow("Last - N Avg", np.hstack((prev_imgs_gray[-1], prev_N_gray_avg)))
+
+    flow = cv.calcOpticalFlowFarneback(prev=prev_N_gray_avg,
+                                       next=next_img_gray,
+                                       flow=None,
+                                       pyr_scale=0.5,
+                                       levels=3,
+                                       winsize=9,
+                                       iterations=3,
+                                       poly_n=7,
+                                       poly_sigma=1.5,
+                                       flags=0)
+
+    # Computes the magnitude and angle of the 2D vectors
+    # mags[-1], angs[-1] = cv.cartToPolar(flow[..., 0], flow[..., 1])
+    mags, angs = cv.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
+
+    # Flattens the arrays to get the best 4 magnitudes
+    mags_flat = np.ravel(mags)
+    angs_flat = np.ravel(angs)
+
+    # Sorts magnitudes on ascending order and grab the best 4 magnitudes!
+    best_mags[-1] = np.sort(mags_flat)[-_n_best:]
+    # Sets the maximum magnitude to a large value to enable the computation
+    # of STD, otherwise the result is NaN.
+    best_mags[-1][best_mags[-1] == np.Inf] = 1024
+
+    # Sorts magnitudes on ascending order and grab the best 4 angles!
+    best_angs[-1] = angs_flat[np.argsort(mags_flat)[-_n_best:]]
+
+    # Computes the Standard Deviation of the best N values
+    x, y = cv.polarToCart(best_mags.ravel(), best_angs.ravel())
+    std = np.std(np.array([x, y]))
+
+    print(f"MAG: {np.average(best_mags, axis=1)}\t"
+          f"ANG: {np.average(best_angs)}\t"
+          f"P: {_people}\t"
+          f"std: {std}")
+
+    # If the average magnitude (of the best N magnitudes) is high then some
+    # big displacement happened
+    if np.all(best_mags >= np.Inf):
+        best_angs_avg = np.average(best_angs)
+        # Check if the angle to determine the direction of the displacement
+        if 90 - MIN_ANG < best_angs_avg < 90 + MIN_ANG:
+            _people -= 1
+            # Writes data to CSV
+            write2csv(f_path=csv_path, number=_people, in_out="out")
+            # Zeros the N best magnitudes and angles arrays so that a high
+            # peek need to be reached again to count the people.
+            best_mags = np.zeros((MAG_N_AVG, _n_best))
+            best_angs = np.zeros((ANG_N_AVG, _n_best))
+        elif 270 - MIN_ANG < best_angs_avg < 270 + MIN_ANG:
+            _people += 1
+            # Writes data to CSV
+            write2csv(f_path=csv_path, number=_people, in_out="in")
+            # Zeros the N best magnitudes and angles arrays so that a high
+            # peek need to be reached again to count the people.
+            best_mags = np.zeros((MAG_N_AVG, _n_best))
+            best_angs = np.zeros((ANG_N_AVG, _n_best))
+
+    # Sets the Hue (Color) according to the angle of the flow
+    overlay[:, :, 0] = np.rint(angs / 2).astype(np.uint8)
+
+    # Sets image Value (Black to Color) according to the optical flow
+    # magnitude (normalized)
+    overlay[:, :, 2] = cv.normalize(mags, None, 0, 255, cv.NORM_MINMAX)
+
+    # Converts HSV to RGB (BGR) color representation
+    overlay = cv.cvtColor(overlay, cv.COLOR_HSV2BGR)
+
+    # Computes the render image to correspond to the average of the N last
+    # images
+    render = np.rint(
+        np.average(imgs_color, axis=0)
+    ).astype(np.uint8)
+    # Sets the overlay (Dense Flow) to the render image
+    render[ROI[0][0]:ROI[0][1], ROI[1][0]:ROI[1][1], :] = overlay
+    # Opens a new window and displays the output frame
+    cv.imshow("dense optical flow", render)
+
+    # Updates the last frame from the array
+    prev_imgs_gray = np.roll(a=prev_imgs_gray, shift=-1, axis=0)
+    prev_imgs_gray[-1] = np.copy(next_img_gray)
+
+    # Updates the last frame from the array
+    imgs_color = np.roll(a=imgs_color, shift=-1, axis=0)
+    imgs_color[-1] = np.copy(rs_depth_color)
+
+    # Sifts the arrays to left.
+    mags = np.roll(a=mags, shift=-1, axis=0)
+    angs = np.roll(a=angs, shift=-1, axis=0)
+    best_mags = np.roll(a=best_mags, shift=-1, axis=0)
+    best_angs = np.roll(a=best_angs, shift=-1, axis=0)
 
     # if pressed ESCAPE exit program
     if key == 27:
