@@ -6,6 +6,7 @@ import os
 from enum import IntEnum
 from datetime import datetime
 import csv
+import time
 
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
@@ -220,7 +221,7 @@ except RuntimeError as err:
     raise RuntimeError("Make sure the config streams exists in the device!")
 
 # Create colorizer object to apply to depth frames
-colorizer_qntz = rs.colorizer(7)  # Quantized
+colorizer_jet = rs.colorizer(0)  # JET
 colorizer_gray = rs.colorizer(2)  # WhiteToBlack
 
 # Creates a window to show color and depth stream
@@ -272,7 +273,7 @@ NUM_MASKS = 4
 #                     [Minimum Width, Maximum Width]]
 # Example: ROI_NEW_FEATURES = [[120, 360], [212, 636]]
 # If ROI_NEW_FEATURES = None then its set to be all the image.
-ROI_NEW_FEATURES = [[260, 360], [300, 630]]
+ROI_NEW_FEATURES = [[260, 350], [300, 620]]
 
 # ROI: Region Of Interest. The region of interest where the keypoints that
 # are tracked via cv.calcOpticalFlowPyrLK are maintained. The keypoints
@@ -282,7 +283,7 @@ ROI_NEW_FEATURES = [[260, 360], [300, 630]]
 # Example: ROI_FEATURE_TRACKING = [[0, 480], [212, 636]]
 # If ROI_FEATURE_TRACKING[0][1] or ROI_FEATURE_TRACKING[1][1] is None then
 # that element is set to the maximum height and width respectively.
-ROI_FEATURE_TRACKING = [[200, 420], [310, 620]]
+ROI_FEATURE_TRACKING = [[210, 430], [310, 620]]
 
 # Minimum magnitude needed to check if angle and computes the number of persons
 MIN_MAG = 50
@@ -303,14 +304,25 @@ MAG_N_AVG = 10
 # compute the average and compare it to the range defined by _MIN_ANG.
 ANG_N_AVG = 2
 
+# Number of levels to quantize the depth image
+QUANTIZE_LVLS = 4
+
+# Set frame rate to constant to avoid different behaviors on different devices
+FPS = 10
+
 # Don't Touch! _iter_count and _people is a counter!
 _iter_count = 0
 _people = 0
 # Don't Touch! first_run is a flag!
 _first_run = True
-
+_bit_depth = 8
+_div = 2**(_bit_depth - (QUANTIZE_LVLS - 1))
+_fps_t = 1/FPS
+_t = time.time()
 # Main cycle/loop
 while True:
+    _t += _fps_t
+
     # Read key and waits 1ms
     key = cv.waitKey(1)
 
@@ -322,8 +334,10 @@ while True:
 
     # Get Depth Frames with Color (Quantized Color Map)
     rs_depth_color = np.asanyarray(
-        colorizer_qntz.colorize(depth_frame).get_data()
+        colorizer_gray.colorize(depth_frame).get_data()
     )
+
+    rs_depth_color = rs_depth_color // _div * _div + _div // 2
 
     # Gray scale depth map based on the depth map with Quantized Color Map
     rs_depth_gray = cv.cvtColor(rs_depth_color, cv.COLOR_RGB2GRAY)
@@ -456,6 +470,8 @@ while True:
         maxLevel=4,
         criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03)
     )
+
+    print(features_prev[:, 0, 0], features_next[:, 0, 0])
 
     # _ROI_FEATURE_TRACKING = [[Minimum Height, Maximum Height],
     #                          [Minimum Width, Maximum Width]]
@@ -642,7 +658,7 @@ while True:
         # Get features to track using Shi-Tomasi Corner Detector
         features_current = cv.goodFeaturesToTrack(
             image=rs_depth_gray,
-            maxCorners=MAX_FEATURES - len(features_next_good),
+            maxCorners=MAX_FEATURES,
             qualityLevel=QUALITY_LVL_SHITOMASI,
             minDistance=2,
             mask=mask_avg,
@@ -656,10 +672,13 @@ while True:
 
         # If there is some features found (not None)
         if features_current is not None:
+            # Lets add them to the features to use on next iteration
             features_prev = np.vstack((
-                features_next_good.reshape(-1, 1, 2), features_current
+                features_current,
+                features_next_good.reshape(-1, 1, 2)
             ))
-        # If its None then just do the usual...
+        # If its None then just do the usual... The features to use on next
+        # iteration are the ones that were tracked.
         else:
             features_prev = features_next_good.reshape(-1, 1, 2)
 
@@ -683,3 +702,4 @@ while True:
     if key == 27:
         cv.destroyAllWindows()
         break
+    time.sleep(max(0, _t - time.time()))
