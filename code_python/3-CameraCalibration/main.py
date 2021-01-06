@@ -609,23 +609,6 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
 # ------------------------------------------------------------------------------
 #                               Utility Functions
 # ------------------------------------------------------------------------------
-def create_csv(f_path):
-    _now = datetime.now()
-    with open(f_path, mode='w', newline='') as csv_f:
-        csv_file = csv.writer(csv_f)
-        csv_file.writerow(
-            ['# Group X', '2190383', 'Jose Rosa', '2192447', 'Ricardo Silva']
-        )
-
-
-def write2csv(f_path, intrinsic, rotation, translation):
-    _now = datetime.now()
-    with open(f_path, mode='a', newline='') as csv_f:
-        csv_file = csv.writer(csv_f)
-        csv_file.writerow([_now.strftime("%H:%M:%S"),
-                           intrinsic, rotation, translation])
-
-
 def reject_outliers_1(data: np.ndarray, m: float = 2.):
     """
     Sets the outliers to 0 on an numpy array. Based on:
@@ -647,6 +630,7 @@ def reject_outliers_2(data: np.ndarray, m: float = 2.):
     s = d / (mdev if mdev else 1.)
     return data[s < m]
 
+
 # endregion
 
 
@@ -658,12 +642,10 @@ path = os.path.join("..", "..", "data",
                     "CV_D435_20201104_160738_RGB_calibration.bag")
 
 timestamp = "_" + datetime.now().strftime('%Y%m%d_%H%M%S')
-csv_path = os.path.join(f"intrinsics_extrinsics{timestamp}.csv")
-create_csv(csv_path)
+save_path = os.path.join(f"calib_params{timestamp}")
 
 # Number of corners required to compute the calibration matrix
-_MIN_CORNERS = 10
-
+_MIN_CORNERS = 40
 
 # Sets the length of the chessboard square
 square_size = 2.5  # Length of the square (2.5)
@@ -728,13 +710,9 @@ obj_points = []
 # Window to show the stream
 cv.namedWindow("Color Stream", cv.WINDOW_AUTOSIZE)
 
-# Tells user how to proceed
-for _ in range(10):
-    print("PRESS SPACE TO CAPTURE A FRAME FOR CALIBRATION!")
-
 # FLAG (Don't touch)
 first_run = True
-
+trigger_pressed = False
 # Main cycle/loop
 while True:
     # Read key and waits 1ms
@@ -775,14 +753,28 @@ while True:
     div[:, :, :] = [100, 100, 65]  # Dark Cyan Blue
     image_bar = np.vstack((div, image_corners))  # NOQA
 
+    if not trigger_pressed:
+        _show = np.copy(rs_color_rgb)
+        _show = cv.putText(img=_show,
+                           text="PRESS <SPACE> TO CAPTURE",
+                           org=(3, 26),
+                           fontFace=cv.FONT_HERSHEY_SIMPLEX,
+                           fontScale=1,
+                           color=(0, 0, 255),
+                           thickness=3,
+                           bottomLeftOrigin=False)
+    else:
+        _show = rs_color_rgb
+
     # Render image in opencv window
-    cv.imshow("Color Stream", np.uint8(np.vstack((rs_color_rgb, image_bar))))
+    cv.imshow("Color Stream", np.uint8(np.vstack((_show, image_bar))))
 
     # If SPACE is pressed
     if key == 32:
         # Find the chessboard inner corners
         ret_val, corners = cv.findChessboardCorners(image=rs_color_gray,
                                                     patternSize=chess_size)
+        trigger_pressed = True
 
         if ret_val:
             # Adds the real world coordinates to the array that stores the real
@@ -821,7 +813,7 @@ while True:
 
             # If the array of the image points have more than the minimum
             # images required for computation...
-            if len(image_points) > _MIN_CORNERS:
+            if len(image_points) >= _MIN_CORNERS:
                 # Removes the first entry, meaning the oldest one, of the
                 # image_points and object_points
                 obj_points.pop(0)
@@ -871,26 +863,70 @@ while True:
                 print(np.round(np.hstack((trans_vec_avg, rot_mat)), 2))
                 print("----------------------------------------\n")
 
-                write2csv(csv_path, cam_mat, rot_mat, trans_vec_avg)
-
-                mean_error = 0
+                error_sum = 0
                 for i in range(len(obj_points)):
-                    imgpoints2, _ = cv.projectPoints(obj_points[i],
-                                                     rot_vec[i],
-                                                     trans_vec[i],
-                                                     cam_mat,
-                                                     dist_coef)
-                    error = cv.norm(image_points[i],
-                                    imgpoints2,
-                                    cv.NORM_L2) / \
-                                    len(imgpoints2)
-                    mean_error += error
+                    image_points_reprojected, _ = cv.projectPoints(
+                        objectPoints=obj_points[i],
+                        rvec=rot_vec[i],
+                        tvec=trans_vec[i],
+                        cameraMatrix=cam_mat,
+                        distCoeffs=dist_coef
+                    )
+                    error = cv.norm(
+                        src1=image_points[i],
+                        src2=image_points_reprojected,  # NOQA
+                        normType=cv.NORM_L2
+                    ) / len(image_points_reprojected)
+                    error_sum += error
 
-                print(mean_error/len(obj_points))
+                avg_error = error_sum / len(obj_points)
+                print(f"Error: {avg_error}")
 
+                new_cam_mat, ROI = cv.getOptimalNewCameraMatrix(
+                    cameraMatrix=cam_mat,
+                    distCoeffs=dist_coef,
+                    imageSize=(_w_, _h_),
+                    alpha=1)
 
+                img_undistorted = cv.undistort(src=rs_color_rgb,
+                                               cameraMatrix=cam_mat,
+                                               distCoeffs=dist_coef,
+                                               dst=None,
+                                               newCameraMatrix=new_cam_mat)
+
+                rs_color_rgb = cv.putText(img=rs_color_rgb,
+                                          text="PRESS <ESC> TO EXIT",
+                                          org=(3, 26),
+                                          fontFace=cv.FONT_HERSHEY_SIMPLEX,
+                                          fontScale=1,
+                                          color=(0, 0, 255),
+                                          thickness=3,
+                                          bottomLeftOrigin=False)
+
+                rs_color_rgb = cv.resize(src=rs_color_rgb,
+                                         dsize=None,
+                                         fx=0.5,
+                                         fy=0.5)
+
+                img_undistorted = cv.resize(src=img_undistorted,
+                                            dsize=None,
+                                            fx=0.5,
+                                            fy=0.5)
+
+                cv.namedWindow("Original - Undistorted", cv.WINDOW_AUTOSIZE)
+                cv.imshow("Original - Undistorted",
+                          np.hstack((rs_color_rgb, img_undistorted)))
 
     # if pressed ESCAPE exit program
     if key == 27:
         cv.destroyAllWindows()
         break
+
+try:
+    np.savez(save_path, cam_mat, dist_coef,  # NOQA
+             rvec=rot_vec_avg, tvec=trans_vec_avg,  # NOQA
+             avg_error=avg_error)  # NOQA
+
+
+except NameError:
+    pass
