@@ -325,7 +325,7 @@ except RuntimeError as err:
     raise RuntimeError("Make sure the config streams exists in the device!")
 
 # Creates a window to show color and depth stream
-cv.namedWindow("Sparse Optical Flow (on Depth Image)",
+cv.namedWindow("Sparse Optical Flow (on Color Image)",
                cv.WINDOW_KEEPRATIO + cv.WINDOW_AUTOSIZE)
 
 # Don't Touch! INTERNAL VARIABLES!
@@ -546,7 +546,7 @@ while True:
         output = cv.add(rs_color, np.sum(overlay, axis=0, dtype=np.uint8))
 
         # Opens a new window and displays the output frame
-        cv.imshow("Sparse Optical Flow (on Depth Image)", output)
+        cv.imshow("Sparse Optical Flow (on Color Image)", output)
 
         # Sift the overlay array to left and sets the last element to zeros
         overlay = np.roll(a=overlay, shift=-1, axis=0)
