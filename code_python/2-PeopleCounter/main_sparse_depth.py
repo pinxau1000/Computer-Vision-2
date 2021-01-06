@@ -15,7 +15,6 @@ import numpy as np
 
 # endregion
 
-
 # region Real Sense Functions
 # ------------------------------------------------------------------------------
 #                               Real Sense Functions
@@ -172,6 +171,18 @@ def write2csv(f_path, number, in_out):
         csv_file.writerow([_now.strftime("%H:%M:%S"), in_out, number])
 
 
+class Colorizer(IntEnum):
+    Jet = 0
+    Classic = 1
+    WhiteToBlack = 2
+    BlackToWhite = 3
+    Bio = 4
+    Cold = 5
+    Warm = 6
+    Quantized = 7
+    Pattern = 8
+
+
 class MaskTypes(IntEnum):
     SUM = 1
     ANY = 1
@@ -189,50 +200,32 @@ class BackGroundTypes(IntEnum):
 
 # endregion
 
-
+# region User Parameters
 # ------------------------------------------------------------------------------
-#                                       Main
+#                                   User Parameters
 # ------------------------------------------------------------------------------
+# Defines the path of the BAG file containing the streams
 path = os.path.join("..", "..", "data", "CV_D435_20201104_162148.bag")
 
-timestamp = "_" + datetime.now().strftime('%Y%m%d_%H%M%S')
-# timestamp = ""
-csv_path = os.path.join(f"sparse_ppl_counter{timestamp}.csv")
-create_csv(csv_path)
-
-# Creates a Real Sense Pipeline Object
-pipeline = rs.pipeline(ctx=rs.context())
-
-# Create a config object
-config = rs.config()
-
-# Tell config that we will use a recorded device from file to be used by
-# the pipeline through playback (comment this line if you want to use a
-# real camera).
-config.enable_device_from_file(file_name=path, repeat_playback=True)
-config = rs_config_color_pipeline(config_rs=config)
-config = rs_config_depth_pipeline(config_rs=config)
-
-try:
-    # Starts the pipeline with the configuration done previously
-    pipeline.start(config=config)
-except RuntimeError as err:
-    print(err)
-    raise RuntimeError("Make sure the config streams exists in the device!")
-
-# Create colorizer object to apply to depth frames
-colorizer_jet = rs.colorizer(0)  # JET
-colorizer_gray = rs.colorizer(2)  # WhiteToBlack
-
-# Creates a window to show color and depth stream
-cv.namedWindow("Sparse Optical Flow (on Depth Image)",
-               cv.WINDOW_KEEPRATIO + cv.WINDOW_AUTOSIZE)
+# Defines the path where the CSV file is saved. The CSV file will store the
+# number of people that entered and exited the room with a timestamp.
+# timestamp = "_" + datetime.now().strftime('%Y%m%d_%H%M%S')
+timestamp = ""
+csv_path = os.path.join(f"sparse_depth_ppl_counter{timestamp}.csv")
 
 # Maximum features that cv.goodFeaturesToTrack retrieve. (Shi-Tomasi Corner
 # Detector)
 MAX_FEATURES = 60
 
-# Minimum iterations to search for new features. If 0 then always search.
+# If True the already tracked features have priority meaning that if new
+# features are found these will not replace the already tracked features to a
+# maximum of MAX_FEATURES.
+# If set to False then the new features will always be preserved to a maximum
+# of MAX_FEATURES.
+PRIORITY_TRACKED = True
+
+# Minimum frames/iterations to search for new features. If 0 then always search
+# for new features on new frames.
 MIN_ITER = 0
 
 # SHI TOMASI Feature Detector Quality Level
@@ -261,7 +254,7 @@ NUM_IMG = 4
 #   - If MaskTypes.ANY: The N last masks are summed. If the any of these
 #   masks is 1 then the shi-tomasi corner detector will try to find keypoints
 #   on that region.
-# Everytime a mask is processed is taked into account the last points that
+# Everytime a mask is processed are took into account the last points that
 # were found so that the same points are not found again.
 # The mask is computed with the background type defined above.
 MASK_TYPE = MaskTypes.AVG
@@ -283,10 +276,10 @@ ROI_NEW_FEATURES = [[260, 350], [300, 620]]
 # Example: ROI_FEATURE_TRACKING = [[0, 480], [212, 636]]
 # If ROI_FEATURE_TRACKING[0][1] or ROI_FEATURE_TRACKING[1][1] is None then
 # that element is set to the maximum height and width respectively.
-ROI_FEATURE_TRACKING = [[210, 430], [310, 620]]
+ROI_FEATURE_TRACKING = [[190, 410], [260, 640]]
 
 # Minimum magnitude needed to check if angle and computes the number of persons
-MIN_MAG = 50
+MIN_MAG = 55
 
 # Minimum angle displacement around 90º and -90º to check the direction of
 # the movement. Note that magnitude requirement is also needed.
@@ -297,27 +290,65 @@ MIN_ANG = 45
 # The number of magnitudes values to store x4. The value is multiplied by 4
 # because the 4 best magnitudes per iteration are stored. This values are used
 # to compute the average and compare this average with _MIN_MAG.
-MAG_N_AVG = 10
+MAG_N_AVG = 8
 
 # The number of angles values to store x4. This values is multiplied by 4
 # because we store the 4 angles of the best 4 magnitudes. These are used to
 # compute the average and compare it to the range defined by _MIN_ANG.
-ANG_N_AVG = 2
+ANG_N_AVG = 4
 
-# Number of levels to quantize the depth image
-QUANTIZE_LVLS = 4
+"""
+@note Quantization showed worst results. Is preferred to use the quantized 
+color map and set the window size for median filter.
+"""
+# Sets the colormap for the depth data and the median filter to apply to it.
+COLORMAP = Colorizer.WhiteToBlack
+KSize_MEDIAN_FILTER = 3
 
-# Set frame rate to constant to avoid different behaviors on different devices
+# Set frame rate to constant value to avoid different behaviors on different
+# devices or CPUs.
 FPS = 10
+# endregion
 
-# Don't Touch! _iter_count and _people is a counter!
+# region Main
+# ------------------------------------------------------------------------------
+#                                   Main
+# ------------------------------------------------------------------------------
+# Creates the CSV File
+create_csv(csv_path)
+
+# Creates a Real Sense Pipeline Object
+pipeline = rs.pipeline(ctx=rs.context())
+
+# Create a config object
+config = rs.config()
+
+# Tell config that we will use a recorded device from file to be used by
+# the pipeline through playback (comment this line if you want to use a
+# real camera).
+config.enable_device_from_file(file_name=path, repeat_playback=True)
+config = rs_config_color_pipeline(config_rs=config)
+config = rs_config_depth_pipeline(config_rs=config)
+
+try:
+    # Starts the pipeline with the configuration done previously
+    pipeline.start(config=config)
+except RuntimeError as err:
+    print(err)
+    raise RuntimeError("Make sure the config streams exists in the device!")
+
+# Create colorizer object to apply to depth frames
+colorizer = rs.colorizer(COLORMAP)  # Quantized
+
+# Creates a window to show color and depth stream
+cv.namedWindow("Sparse Optical Flow (on Depth Image)",
+               cv.WINDOW_KEEPRATIO + cv.WINDOW_AUTOSIZE)
+
+# Don't Touch! INTERNAL VARIABLES!
 _iter_count = 0
 _people = 0
-# Don't Touch! first_run is a flag!
 _first_run = True
-_bit_depth = 8
-_div = 2**(_bit_depth - (QUANTIZE_LVLS - 1))
-_fps_t = 1/FPS
+_fps_t = 1 / FPS
 _t = time.time()
 # Main cycle/loop
 while True:
@@ -334,16 +365,14 @@ while True:
 
     # Get Depth Frames with Color (Quantized Color Map)
     rs_depth_color = np.asanyarray(
-        colorizer_gray.colorize(depth_frame).get_data()
+        colorizer.colorize(depth_frame).get_data()
     )
 
-    rs_depth_color = rs_depth_color // _div * _div + _div // 2
+    # Remove some noise
+    rs_depth_color = cv.medianBlur(rs_depth_color, KSize_MEDIAN_FILTER)
 
     # Gray scale depth map based on the depth map with Quantized Color Map
     rs_depth_gray = cv.cvtColor(rs_depth_color, cv.COLOR_RGB2GRAY)
-
-    # Applies a filtering process to enhance the tracking
-    rs_depth_gray = cv.GaussianBlur(rs_depth_gray, (5, 5), sigmaX=0, sigmaY=0)
 
     # If is the first run...
     if _first_run:
@@ -371,7 +400,7 @@ while True:
         if np.shape(ROI_NEW_FEATURES) == (2, 2):
             mask = np.zeros((_shape[0], _shape[1]), dtype=np.uint8)
             mask[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
-                 ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] = 1
+            ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] = 1
         else:
             ROI_NEW_FEATURES = [[0, _shape[0]], [0, _shape[1]]]
             mask = None
@@ -471,235 +500,282 @@ while True:
         criteria=(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03)
     )
 
-    print(features_prev[:, 0, 0], features_next[:, 0, 0])
+    try:
+        # _ROI_FEATURE_TRACKING = [[Minimum Height, Maximum Height],
+        #                          [Minimum Width, Maximum Width]]
+        status[features_next[:, 0, 1] < ROI_FEATURE_TRACKING[0][0]] = 0
+        status[features_next[:, 0, 1] > ROI_FEATURE_TRACKING[0][1]] = 0
+        status[features_next[:, 0, 0] < ROI_FEATURE_TRACKING[1][0]] = 0
+        status[features_next[:, 0, 0] > ROI_FEATURE_TRACKING[1][1]] = 0
 
-    # _ROI_FEATURE_TRACKING = [[Minimum Height, Maximum Height],
-    #                          [Minimum Width, Maximum Width]]
-    status[features_next[:, 0, 1] < ROI_FEATURE_TRACKING[0][0]] = 0
-    status[features_next[:, 0, 1] > ROI_FEATURE_TRACKING[0][1]] = 0
-    status[features_next[:, 0, 0] < ROI_FEATURE_TRACKING[1][0]] = 0
-    status[features_next[:, 0, 0] > ROI_FEATURE_TRACKING[1][1]] = 0
+        # Selects good feature points for previous position
+        features_prev_good = features_prev[status == 1]
 
-    # Selects good feature points for previous position
-    features_prev_good = features_prev[status == 1]
+        # Selects good feature points for next position
+        features_next_good = features_next[status == 1]
 
-    # Selects good feature points for next position
-    features_next_good = features_next[status == 1]
+        """
+        # Shows the previous and next image
+        cv.imshow("Prev - Next",
+                  np.hstack((previous_images_gray[-1], rs_depth_gray))
+                  )
+        # """
 
-    # Shows the previous and next image
-    # cv.imshow("Prev - Next",
-    #           np.hstack((previous_images_gray[-1], rs_depth_gray))
-    #           )
+        # A random line color per iteration
+        color = tuple(np.random.randint(0, 256, size=3).tolist())  # NOQA
 
-    # A random line color per iteration
-    color = tuple(np.random.randint(0, 256, size=3).tolist())  # NOQA
+        # Draws the optical flow tracks
+        for i, (new, old) in enumerate(zip(features_next_good, features_prev_good)):
+            # Returns a contiguous flattened array as (x, y) coordinates for new
+            # point
+            a, b = new.ravel()
+            # Returns a contiguous flattened array as (x, y) coordinates for old
+            # point
+            c, d = old.ravel()
 
-    # Draws the optical flow tracks
-    for i, (new, old) in enumerate(zip(features_next_good, features_prev_good)):
-        # Returns a contiguous flattened array as (x, y) coordinates for new
-        # point
-        a, b = new.ravel()
-        # Returns a contiguous flattened array as (x, y) coordinates for old
-        # point
-        c, d = old.ravel()
+            # Draws line between new and old position with green color and 2
+            # thickness. The new image (with lines) is drawn on a blank array and
+            # sets the last element of the overlays list. This is done so that we
+            # only view the last N lines.
+            overlay[-1] = cv.line(img=overlay[-1],  # NOQA
+                                  pt1=(a, b),
+                                  pt2=(c, d),
+                                  color=color,
+                                  thickness=2)
+            # Draws filled circle (thickness of -1) at new position with green
+            # color and radius of 3
+            rs_depth_color = cv.circle(rs_depth_color, (a, b), 3, color, -1)
 
-        # Draws line between new and old position with green color and 2
-        # thickness. The new image (with lines) is drawn on a blank array and
-        # sets the last element of the overlays list. This is done so that we
-        # only view the last N lines.
-        overlay[-1] = cv.line(img=overlay[-1],  # NOQA
-                              pt1=(a, b),
-                              pt2=(c, d),
-                              color=color,
-                              thickness=2)
-        # Draws filled circle (thickness of -1) at new position with green
-        # color and radius of 3
-        rs_depth_color = cv.circle(rs_depth_color, (a, b), 3, color, -1)
+        # Adds the fixed overlay to background
+        rs_depth_color = cv.add(rs_depth_color, fixed_overlay)  # NOQA
 
-    # Adds the fixed overlay to background
-    rs_depth_color = cv.add(rs_depth_color, fixed_overlay)  # NOQA
+        # Draws text showing the number of people inside the room
+        rs_depth_color = cv.putText(img=rs_depth_color,
+                                    text=str(_people),
+                                    org=(5, _shape[0] - 5),  # NOQA
+                                    fontFace=cv.FONT_HERSHEY_SIMPLEX,
+                                    fontScale=1,
+                                    color=(255, 0, 255),
+                                    thickness=3)
 
-    # Draws text showing the number of people inside the room
-    rs_depth_color = cv.putText(img=rs_depth_color,
-                                text=str(_people),
-                                org=(5, _shape[0] - 5),  # NOQA
-                                fontFace=cv.FONT_HERSHEY_SIMPLEX,
-                                fontScale=1,
-                                color=(255, 0, 255),
-                                thickness=3)
+        # Adds all the overlays and then adds it to the image to show
+        output = cv.add(rs_depth_color, np.sum(overlay, axis=0, dtype=np.uint8))
 
-    # Adds all the overlays and then adds it to the image to show
-    output = cv.add(rs_depth_color, np.sum(overlay, axis=0, dtype=np.uint8))
+        # Opens a new window and displays the output frame
+        cv.imshow("Sparse Optical Flow (on Depth Image)", output)
 
-    # Opens a new window and displays the output frame
-    cv.imshow("Sparse Optical Flow (on Depth Image)", output)
+        # Sift the overlay array to left and sets the last element to zeros
+        overlay = np.roll(a=overlay, shift=-1, axis=0)
+        overlay[-1] = np.zeros_like(overlay[-1])
 
-    # Sift the overlay array to left and sets the last element to zeros
-    overlay = np.roll(a=overlay, shift=-1, axis=0)
-    overlay[-1] = np.zeros_like(overlay[-1])
+        # Computes the magnitude for all group of points (Line between previous and
+        # next points)
+        mags = np.sqrt(
+            np.square(features_next_good[:, 0] - features_prev_good[:, 0]) +
+            np.square(features_next_good[:, 1] - features_prev_good[:, 1])
+        )
 
-    # Computes the magnitude for all group of points (Line between previous and
-    # next points)
-    mags = np.sqrt(
-        np.square(features_next_good[:, 0] - features_prev_good[:, 0]) +
-        np.square(features_next_good[:, 1] - features_prev_good[:, 1])
-    )
+        # Computes the angle for all group of points (Line between previous and
+        # next points)
+        angs = np.arctan2(
+            features_next_good[:, 1] - features_prev_good[:, 1],
+            features_next_good[:, 0] - features_prev_good[:, 0]
+        ) * 180 / np.pi
 
-    # Computes the angle for all group of points (Line between previous and
-    # next points)
-    angs = np.arctan2(
-        features_next_good[:, 1] - features_prev_good[:, 1],
-        features_next_good[:, 0] - features_prev_good[:, 0]
-    ) * 180 / np.pi
+        # If the array have not the 4 "best" required elements then just add
+        # nulls to avoid ValueError exception
+        if len(mags) < 4:
+            mags = np.hstack((mags, np.zeros((4 - len(mags)))))
+            angs = np.hstack((angs, np.zeros((4 - len(angs)))))
 
-    # If the array have not the 4 "best" required elements then just add
-    # nulls to avoid ValueError exception
-    if len(mags) < 4:
-        mags = np.hstack((mags, np.zeros((4 - len(mags)))))
-        angs = np.hstack((angs, np.zeros((4 - len(angs)))))
+        # Sorts the magnitudes in ascending order and grabs the best 4 magnitudes.
+        # Thee best magnitudes are added to an array to compute the average of
+        # the N sets of best magnitudes.
+        best_mags[-1] = np.sort(mags)[-4:]  # NOQA
 
-    # Sorts the magnitudes in ascending order and grabs the best 4 magnitudes.
-    # Thee best magnitudes are added to an array to compute the average of
-    # the N sets of best magnitudes.
-    best_mags[-1] = np.sort(mags)[-4:]  # NOQA
+        # Sorts the magnitudes in ascending order, gets the index of best 4
+        # magnitudes and gets the angles corresponding to those best magnitudes.
+        best_angs[-1] = angs[np.argsort(mags)[-4:]]  # NOQA
 
-    # Sorts the magnitudes in ascending order, gets the index of best 4
-    # magnitudes and gets the angles corresponding to those best magnitudes.
-    best_angs[-1] = angs[np.argsort(mags)[-4:]]  # NOQA
+        # Computes the average of the angle and the magnitude
+        best_mags_avg = np.average(best_mags)
+        best_angs_avg = np.average(best_angs)
 
-    # Computes the average of the angle and the magnitude
-    best_mags_avg = np.average(best_mags)
-    best_angs_avg = np.average(best_angs)
+        # If the average magnitude (of the best N magnitudes) is high then some
+        # big displacement happened
+        if best_mags_avg > MIN_MAG:
+            # Check if the angle to determine the direction of the displacement
+            if 90 - MIN_ANG < best_angs_avg < 90 + MIN_ANG:
+                _people -= 1
+                # Writes data to CSV
+                write2csv(f_path=csv_path, number=_people, in_out="out")
+                # Zeros the N best magnitudes and angles arrays so that a high
+                # peek need to be reached again to count the people.
+                best_mags = np.zeros((MAG_N_AVG, 4))
+                best_angs = np.zeros((ANG_N_AVG, 4))
+            elif -90 - MIN_ANG < best_angs_avg < -90 + MIN_ANG:
+                _people += 1
+                # Writes data to CSV
+                write2csv(f_path=csv_path, number=_people, in_out="in")
+                # Zeros the N best magnitudes and angles arrays so that a high
+                # peek need to be reached again to count the people.
+                best_mags = np.zeros((MAG_N_AVG, 4))
+                best_angs = np.zeros((ANG_N_AVG, 4))
 
-    # If the average magnitude (of the best N magnitudes) is high then some
-    # big displacement happened
-    if best_mags_avg > MIN_MAG:
-        # Check if the angle to determine the direction of the displacement
-        if 90 - MIN_ANG < best_angs_avg < 90 + MIN_ANG:
-            _people -= 1
-            # Writes data to CSV
-            write2csv(f_path=csv_path, number=_people, in_out="out")
-            # Zeros the N best magnitudes and angles arrays so that a high
-            # peek need to be reached again to count the people.
-            best_mags = np.zeros((MAG_N_AVG, 4))
-            best_angs = np.zeros((ANG_N_AVG, 4))
-        elif -90 - MIN_ANG < best_angs_avg < -90 + MIN_ANG:
-            _people += 1
-            # Writes data to CSV
-            write2csv(f_path=csv_path, number=_people, in_out="in")
-            # Zeros the N best magnitudes and angles arrays so that a high
-            # peek need to be reached again to count the people.
-            best_mags = np.zeros((MAG_N_AVG, 4))
-            best_angs = np.zeros((ANG_N_AVG, 4))
+        # Shifts the best magnitudes and angles array so that the last element is
+        # the oldest one and zeros that element.
+        best_mags = np.roll(a=best_mags, shift=-1, axis=0)
+        best_angs = np.roll(a=best_angs, shift=-1, axis=0)
+        best_mags[-1] = np.zeros_like(best_mags[-1])
+        best_angs[-1] = np.zeros_like(best_angs[-1])
 
-    # Shifts the best magnitudes and angles array so that the last element is
-    # the oldest one and zeros that element.
-    best_mags = np.roll(a=best_mags, shift=-1, axis=0)
-    best_angs = np.roll(a=best_angs, shift=-1, axis=0)
-    best_mags[-1] = np.zeros_like(best_mags[-1])
-    best_angs[-1] = np.zeros_like(best_angs[-1])
+        # All processing is done here! If Processing in all iterations set
+        # _MIN_ITER to 0.
+        if _iter_count > MIN_ITER:
+            if BACKGROUND_TYPE == BackGroundTypes.AVERAGE:
+                # Average of N last images
+                previous_N_avg = np.rint(np.average(
+                    previous_images_gray, axis=0
+                )).astype(np.uint8)
+            else:
+                previous_N_avg = background  # NOQA
 
-    # All processing is done here! If Processing in all iterations set
-    # _MIN_ITER to 0.
-    if _iter_count > MIN_ITER:
-        if BACKGROUND_TYPE == BackGroundTypes.AVERAGE:
-            # Average of N last images
-            previous_N_avg = np.rint(np.average(
-                previous_images_gray, axis=0
-            )).astype(np.uint8)
+            # Absolute difference to compute the last mask (1 = compute;
+            # 0 = ignore). The mask takes into account the region of interest!
+            masks[-1][ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],  # NOQA
+            ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] = \
+                abs(rs_depth_gray[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
+                    ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] -
+                    previous_N_avg[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
+                    ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]])
+
+            # Converts the mask to binary.
+            masks[-1] = cv.threshold(src=masks[-1],
+                                     thresh=0.5 * np.max(masks[-1]),
+                                     maxval=1,
+                                     type=cv.THRESH_BINARY)[1]
+
+            # Sets the last mask to 0 when this corresponds to an point that
+            # already exists
+            _k_size = 3
+            for (w, h) in features_next_good:
+                w = np.rint(w).astype(np.uint)
+                h = np.rint(h).astype(np.uint)
+                try:
+                    masks[-1][h - _k_size:h + _k_size, w - _k_size:w + _k_size] = 0
+                except IndexError:
+                    masks[-1] = 0
+
+            if MASK_TYPE == MaskTypes.AVERAGE:
+                mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
+                mask_avg = cv.threshold(src=mask_avg,
+                                        thresh=0.5 * np.max(masks),
+                                        maxval=1,
+                                        type=cv.THRESH_BINARY)[1]
+            else:
+                mask_avg = np.sum(masks, axis=0).astype(np.uint8)
+                mask_avg[mask_avg >= 1] = 1
+
+            """
+            # Shows the Last N Images
+            cv.imshow("N LAST IMAGES", previous_N_avg)
+    
+            # Remaps the 1 to 255 so we can visualize the mask
+            _show = mask_avg
+            _show[mask_avg == 1] = 255
+            # Shows the Mask
+            cv.imshow("MASK", _show)
+            # """
+
+            # Get features to track using Shi-Tomasi Corner Detector
+            features_current = cv.goodFeaturesToTrack(
+                image=rs_depth_gray,
+                maxCorners=MAX_FEATURES,
+                qualityLevel=QUALITY_LVL_SHITOMASI,
+                minDistance=2,
+                mask=mask_avg,
+                blockSize=7
+            )
+
+            # Shifts the mask array to left and set the oldest element (now on
+            # right) to zeros.
+            masks = np.roll(a=masks, shift=-1, axis=0)
+            masks[-1] = np.zeros_like(masks[-1])
+
+            # If there is some features found (not None)
+            if features_current is not None:
+                # Lets add them to the features to use on next iteration
+                if PRIORITY_TRACKED:
+                    # Always add the new features
+                    features_prev = np.vstack((
+                        features_current,
+                        features_next_good.reshape(-1, 1, 2)
+                    ))
+                else:
+                    # Always add the already being tracked features
+                    features_prev = np.vstack((
+                        features_next_good.reshape(-1, 1, 2),
+                        features_current
+                    ))
+            # If its None then just do the usual... The features to use on next
+            # iteration are the ones that were tracked.
+            else:
+                features_prev = features_next_good.reshape(-1, 1, 2)
+
+            # Retains only N features (Don't forget the features are ordered by
+            # ascending quality!) This may lead
+            if len(features_prev) > MAX_FEATURES:
+                features_prev = features_prev[:MAX_FEATURES, :, :]
+
+            # Resets Counter
+            _iter_count = 0
+
+        # _iter_count <= MIN_ITER: don't search new features to track
         else:
-            previous_N_avg = background  # NOQA
+            # Usual
+            features_prev = features_next_good.reshape(-1, 1, 2)
 
-        # Absolute difference to compute the last mask (1 = compute;
-        # 0 = ignore). The mask takes into account the region of interest!
-        masks[-1][ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],  # NOQA
-        ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] = \
-            abs(rs_depth_gray[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
-                ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] -
-                previous_N_avg[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
-                ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]])
-
-        # Converts the mask to binary.
-        masks[-1] = cv.threshold(src=masks[-1],
-                                 thresh=0.5 * np.max(masks[-1]),
-                                 maxval=1,
-                                 type=cv.THRESH_BINARY)[1]
-
-        # Sets the last mask to 0 when this corresponds to an point that
-        # already exists
-        _k_size = 3
-        for (w, h) in features_next_good:
-            w = np.rint(w).astype(np.uint)
-            h = np.rint(h).astype(np.uint)
-            try:
-                masks[-1][h - _k_size:h + _k_size, w - _k_size:w + _k_size] = 0
-            except IndexError:
-                masks[-1] = 0
-
-        if MASK_TYPE == MaskTypes.AVERAGE:
-            mask_avg = np.rint(np.average(masks, axis=0)).astype(np.uint8)
-            mask_avg = cv.threshold(src=mask_avg,
-                                    thresh=0.5 * np.max(masks),
-                                    maxval=1,
-                                    type=cv.THRESH_BINARY)[1]
+    # Sometimes the calcOpticalFlowPyrLK will return an empty object (
+    # NoneType) because it failed to track the features. In this situation we
+    # just try to track new ones on the next iteration searching for new good
+    # feature to track using shi-tomasi. This rarely happens and a good
+    # solution to this problem is to reduce the mask array size.
+    except TypeError:
+        print("\033[91m"
+              "Failed to track the previous features. Generating new ones!"
+              "\033[0m")
+        # Initializes the mask so that it corresponds to the Region of
+        # Interest for creation of new keypoints
+        if np.shape(ROI_NEW_FEATURES) == (2, 2):
+            mask = np.zeros((_shape[0], _shape[1]), dtype=np.uint8)
+            mask[ROI_NEW_FEATURES[0][0]:ROI_NEW_FEATURES[0][1],
+            ROI_NEW_FEATURES[1][0]:ROI_NEW_FEATURES[1][1]] = 1
         else:
-            mask_avg = np.sum(masks, axis=0).astype(np.uint8)
-            mask_avg[mask_avg >= 1] = 1
+            ROI_NEW_FEATURES = [[0, _shape[0]], [0, _shape[1]]]
+            mask = None
 
-        # Shows the Last N Images
-        # cv.imshow("N LAST IMAGES", previous_N_avg)
-
-        # Remaps the 1 to 255 so we can visualize the mask
-        # _show = mask_avg
-        # _show[mask_avg == 1] = 255
-        # Shows the Mask
-        # cv.imshow("MASK", _show)
-
-        # Get features to track using Shi-Tomasi Corner Detector
-        features_current = cv.goodFeaturesToTrack(
-            image=rs_depth_gray,
+        # Sets the previous features as the new ones
+        features_prev = cv.goodFeaturesToTrack(
+            image=previous_images_gray[-1],  # NOQA
             maxCorners=MAX_FEATURES,
             qualityLevel=QUALITY_LVL_SHITOMASI,
             minDistance=2,
-            mask=mask_avg,
-            blockSize=7
+            blockSize=7,
+            mask=mask
         )
-
-        # Shifts the mask array to left and set the oldest element (now on
-        # right) to zeros.
-        masks = np.roll(a=masks, shift=-1, axis=0)
-        masks[-1] = np.zeros_like(masks[-1])
-
-        # If there is some features found (not None)
-        if features_current is not None:
-            # Lets add them to the features to use on next iteration
-            features_prev = np.vstack((
-                features_current,
-                features_next_good.reshape(-1, 1, 2)
-            ))
-        # If its None then just do the usual... The features to use on next
-        # iteration are the ones that were tracked.
-        else:
-            features_prev = features_next_good.reshape(-1, 1, 2)
-
-        # Retains only N features (Don't forget the features are ordered by
-        # ascending quality!)
-        if len(features_prev) > MAX_FEATURES:
-            features_prev = features_prev[:MAX_FEATURES, :, :]
-
-        # Increase Counter
-        _iter_count = 0
-    else:
-        # Usual
-        features_prev = features_next_good.reshape(-1, 1, 2)
 
     # Updates the last frame from the array
     previous_images_gray = np.roll(a=previous_images_gray, shift=-1, axis=0)
     previous_images_gray[-1] = np.copy(rs_depth_gray)
 
+    # Increase Counter
     _iter_count += 1
+
     # if pressed ESCAPE exit program
     if key == 27:
         cv.destroyAllWindows()
         break
-    time.sleep(max(0, _t - time.time()))
+
+    # Waits till next frame
+    time.sleep(max(0, _t - time.time()))  # NOQA
+# endregion
