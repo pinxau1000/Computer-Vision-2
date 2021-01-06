@@ -4,6 +4,7 @@
 # ------------------------------------------------------------------------------
 import os
 from typing import Union
+from enum import IntEnum
 
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
@@ -764,6 +765,18 @@ def onMouseClick(event, x, y, flags, userdata):
           f"\x1b[0m")
 
 
+class Colorizer(IntEnum):
+    Jet = 0
+    Classic = 1
+    WhiteToBlack = 2
+    BlackToWhite = 3
+    Bio = 4
+    Cold = 5
+    Warm = 6
+    Quantized = 7
+    Pattern = 8
+
+
 # endregion
 
 
@@ -795,7 +808,7 @@ except RuntimeError as err:
 # Create colorizer object to apply to depth frames. Possible values for
 # color_scheme: 0 - Jet; 1 - Classic; 2 - WhiteToBlack; 3 - BlackToWhite;
 # 4 - Bio; 5 - Cold; 6 - Warm; 7 - Quantized; 8 - Pattern
-colorizer = rs.colorizer(0)
+colorizer = rs.colorizer(Colorizer.Jet)
 
 # Get intrinsics and extrinsics parameters from the multiple profiles of
 # the pipeline
@@ -892,17 +905,21 @@ while True:
             matches_list=matches_all,
             keypointsL=kp1,
             keypointsR=kp2,
-            K=0.2
+            K=0.2, best_N=8
         )
         # , best_N=8)  # Retains only the best 8 matches
         # , best_N=0.95) # Retains only 95% of the total best matches
 
         """
         # Generate and show the matches
-        matching_image = np.hstack((left_ir, right_ir))
-        matching_image = cv.drawMatches(img1=left_ir,
+        left_ir_rsz = cv.resize(src=left_ir, dsize=None, fx=0.8,
+                                  fy=0.8)
+        right_ir_rsz = cv.resize(src=right_ir, dsize=None, fx=0.8,
+                                  fy=0.8)
+        matching_image = np.hstack((left_ir_rsz, right_ir_rsz))
+        matching_image = cv.drawMatches(img1=left_ir_rsz,
                                         keypoints1=kp1,
-                                        img2=right_ir,
+                                        img2=right_ir_rsz,
                                         keypoints2=kp2,
                                         matches1to2=matches_l2r,
                                         outImg=matching_image,
@@ -934,8 +951,15 @@ while True:
     depth_color = cv.applyColorMap(src=np.uint8(depth_remap),
                                    colormap=cv.COLORMAP_JET)
 
-    # Show the depth image
     cv.imshow("My Depth Map", depth_color)
+    """
+    # Show the both depth image
+    rs_depth_color_rsz = cv.resize(src=rs_depth_color, dsize=None, fx=0.8,
+                                   fy=0.8)
+    depth_color_rsz = cv.resize(src=depth_color, dsize=None, fx=0.8,
+                                fy=0.8)
+    cv.imshow("R435 vs My", np.hstack((rs_depth_color_rsz, depth_color_rsz)))
+    # """
 
     # Computes AVG and STD for quality metrics
     avg, std, M2 = compute_error(
@@ -965,8 +989,7 @@ while True:
     # """
     # Prints the AVG of the absolute difference of all pixels and the STD
     if count % 10 == 0:
-        print(f"\033[35m"
-              f"AVG: {str(global_avg)};\t"
+        print(f"\033[35mAVG: {str(global_avg)};\t"
               f"\033[93mSTD: {str(global_std)};"
               f"\033[0m")
     # """
