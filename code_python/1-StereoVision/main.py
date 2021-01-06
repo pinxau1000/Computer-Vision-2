@@ -414,7 +414,7 @@ def lowe_ratio_test(matches_list: list, keypointsL: list, keypointsR: list,
         best_N = int(np.rint(best_N * len(_matchesL)))
 
         return _matchesL[:best_N], _matchesR[:best_N], \
-            _matches1to2[:best_N], _matches2to1[:best_N]
+               _matches1to2[:best_N], _matches2to1[:best_N]
 
     if type(best_N) is int:
         assert len(_matchesL) >= best_N, \
@@ -569,8 +569,8 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
     """
     assert isinstance(disparity_filter, cv.ximgproc_DisparityFilter) or \
            disparity_filter is None, \
-           "Disparity Filter must be an instance of " \
-           "cv.ximgproc_DisparityFilter or None!"
+        "Disparity Filter must be an instance of " \
+        "cv.ximgproc_DisparityFilter or None!"
 
     if disparity_matcher is None:
         # Default disparity matcher if None is passed
@@ -760,22 +760,17 @@ def onMouseClick(event, x, y, flags, userdata):
         return
 
     print(f"\033[92m"
-          f"D435: {rs_depth_scaled[x, y]}\t-\tMy: {depth[x, y]}"
+          f"D435: {rs_depth_scaled[y, x]}\t-\tMy: {depth[y, x]}"
           f"\x1b[0m")
+
+
 # endregion
 
 
 # ------------------------------------------------------------------------------
 #                                       Main
 # ------------------------------------------------------------------------------
-FULL_CALIB = os.path.join("..", "..", "data",
-                          "CV_D435_20201104_161043_Full_calibration.bag")
-RGB_CALIB = os.path.join("..", "..", "data",
-                         "CV_D435_20201104_160738_RGB_calibration.bag")
-STREAM = os.path.join("..", "..", "data",
-                      "CV_D435_20201104_162148.bag")
-
-path = STREAM
+path = os.path.join("..", "..", "data", "CV_D435_20201104_162148.bag")
 
 # Creates a Real Sense Pipeline Object
 pipeline = rs.pipeline(ctx=rs.context())
@@ -787,7 +782,6 @@ config = rs.config()
 # the pipeline through playback (comment this line if you want to use a
 # real camera).
 config.enable_device_from_file(file_name=path, repeat_playback=True)
-config = rs_config_color_pipeline(config_rs=config)
 config = rs_config_IR_pipeline(config_rs=config)
 config = rs_config_depth_pipeline(config_rs=config)
 
@@ -875,6 +869,8 @@ while True:
     rs_depth_color = np.asanyarray(colorizer.colorize(depth_frame).get_data())
     # Get Depth Frames without Color (Used for distance calculation)
     rs_depth = np.asanyarray(depth_frame.get_data())
+    # The real depth value in meters
+    rs_depth_scaled = rs_depth * rs_depth_scale
 
     # Render image in opencv window
     cv.imshow("D435 Depth Map", rs_depth_color)
@@ -896,47 +892,31 @@ while True:
             matches_list=matches_all,
             keypointsL=kp1,
             keypointsR=kp2,
-            K=0.6
+            K=0.2
         )
-        # , best_N=0.95)
+        # , best_N=8)  # Retains only the best 8 matches
+        # , best_N=0.95) # Retains only 95% of the total best matches
 
         """
         # Generate and show the matches
         matching_image = np.hstack((left_ir, right_ir))
-        matching_image = cv.drawMatches(img1=left_ir, keypoints1=kp1,
+        matching_image = cv.drawMatches(img1=left_ir,
+                                        keypoints1=kp1,
                                         img2=right_ir,
-                                        keypoints2=kp2, matches1to2=matches_l2r,
-                                        outImg=matching_image, flags=2)
+                                        keypoints2=kp2,
+                                        matches1to2=matches_l2r,
+                                        outImg=matching_image,
+                                        flags=cv.DRAW_MATCHES_FLAGS_NOT_DRAW_SINGLE_POINTS)
 
         cv.imshow("Matching", matching_image)
         # """
 
-        # Compute the fundamental matrix
-        fund_mat, inliers_l, inliers_r = get_fundamental_matrix(
-            matchesL=matches_l,
-            matchesR=matches_r)
-
-        # Transform matrix to virtual common plane
-        H1, H2 = get_homography(match_pts1=inliers_l,
-                                match_pts2=inliers_r,
-                                fundamental_mat=fund_mat,
-                                img=left_ir)
-
         # Keep the H1 and H2 from the first run for the next frames.
         first_run = False
 
-    # Rectify the left image
-    left_rect = get_rectified(img=left_ir, M_mat=H1)
-
-    # Rectify the right image
-    right_rect = get_rectified(img=right_ir, M_mat=H2)
-
-    # Show rectified images
-    # cv.imshow("Rectified", np.hstack((left_rect, right_rect)))
-
     # Get the disparity map from the left and rectified right image
-    disparity = get_disparity_map(imageL=left_rect,
-                                  imageR=right_rect,
+    disparity = get_disparity_map(imageL=left_ir,
+                                  imageR=right_ir,
                                   disparity_matcher=matcher,
                                   disparity_filter=disp_filter)
 
@@ -958,7 +938,6 @@ while True:
     cv.imshow("My Depth Map", depth_color)
 
     # Computes AVG and STD for quality metrics
-    rs_depth_scaled = rs_depth * rs_depth_scale
     avg, std, M2 = compute_error(
         orig=rs_depth_scaled,
         test=depth,
@@ -973,9 +952,6 @@ while True:
     # Gets the std of all pixels
     global_std = np.average(std)
 
-    # Prints the AVG of the absolute difference of all pixels and the STD
-    print(f"AVG: {str(global_avg)};\t-\tSTD: {str(global_std)}")
-
     # Draws a graph showing the average and std
     error_graph, _error_graph_max, error_graph_min = draw_error(
         current=error_graph,
@@ -985,6 +961,16 @@ while True:
         wh=win_h,
         sc=scale
     )
+
+    # """
+    # Prints the AVG of the absolute difference of all pixels and the STD
+    if count % 10 == 0:
+        print(f"\033[35m"
+              f"AVG: {str(global_avg)};\t"
+              f"\033[93mSTD: {str(global_std)};"
+              f"\033[0m")
+    # """
+
     cv.imshow("ERROR - AVG & STD", error_graph)
 
     # Increment (Used for Welford metrics)
