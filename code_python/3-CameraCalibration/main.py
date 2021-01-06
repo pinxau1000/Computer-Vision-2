@@ -4,6 +4,8 @@
 # ------------------------------------------------------------------------------
 import os
 from typing import Union
+import csv
+from datetime import datetime
 
 from pyrealsense2 import pyrealsense2 as rs
 from cv2 import cv2 as cv
@@ -607,64 +609,24 @@ def get_disparity_map(imageL: np.ndarray, imageR: np.ndarray,
 # ------------------------------------------------------------------------------
 #                               Utility Functions
 # ------------------------------------------------------------------------------
-def avg_std_welford(sample: np.ndarray, _N: int,
-                    last_avg: np.ndarray, last_M2: np.ndarray):
-    """
-    Computes the average and standard deviation N samples, including the
-    actual sample.
-
-    @param sample: The current sample to be evaluated
-    @type sample: np.ndarray
-    @param _N: The number of current sample
-    @type _N: int
-    @param last_avg: last average
-    @type last_avg: np.ndarray
-    @param last_M2: last M2 param
-    @type last_M2: np.ndarray
-    @return: average, standard deviation, M2 and N
-    @rtype: np.ndarray, np.ndarray, np.ndarray, int
-    """
-
-    _avg = last_avg + (sample - last_avg) / _N
-    _M2 = last_M2 + (sample - last_avg) * (sample - _avg)
-    _std = _M2 / _N
-
-    return _avg, _std, _M2, _N
+def create_csv(f_path):
+    _now = datetime.now()
+    with open(f_path, mode='w', newline='') as csv_f:
+        csv_file = csv.writer(csv_f)
+        csv_file.writerow(
+            ['# Group X', '2190383', 'Jose Rosa', '2192447', 'Ricardo Silva']
+        )
 
 
-def compute_error(orig: np.ndarray, test: np.ndarray, _N: int,
-                  _avg: np.ndarray, _M2: np.ndarray):
-    """
-    Computes the error between the original and test array using the absolute
-    difference between pixels. Welfoard algoritm is used.
-
-    @param orig: Original samples
-    @type orig: np.ndarray
-    @param test: Test samples
-    @type test: np.ndarray
-    @param _N: N iteration
-    @type _N: int
-    @param _avg: last average
-    @type _avg: np.ndarray
-    @param _M2: last M2
-    @type _M2: np.ndarray
-    @return: np.ndarray, np.ndarray, np.ndarray
-    @rtype: average, standard deviation, M2
-    """
-    # Creates a mark with the same shape of original image/array
-    _mask = np.zeros_like(orig)
-
-    # Sets the mask to 1 only when orig and test are bigger than 0
-    _abs_dif = np.zeros_like(orig)
-    np.putmask(_abs_dif, (orig > 0) & (test > 0), np.abs(orig - test))
-
-    # Applies Welford algoritm to compute avg and std (M2 is also returned)
-    return avg_std_welford(sample=_abs_dif, _N=_N,
-                           last_avg=_avg,
-                           last_M2=_M2)[:3]
+def write2csv(f_path, intrinsic, rotation, translation):
+    _now = datetime.now()
+    with open(f_path, mode='a', newline='') as csv_f:
+        csv_file = csv.writer(csv_f)
+        csv_file.writerow([_now.strftime("%H:%M:%S"),
+                           intrinsic, rotation, translation])
 
 
-def get_inliers(data: np.ndarray, m: float = 2.):
+def reject_outliers_1(data: np.ndarray, m: float = 2.):
     """
     Sets the outliers to 0 on an numpy array. Based on:
     https://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
@@ -675,80 +637,15 @@ def get_inliers(data: np.ndarray, m: float = 2.):
     return data[s >= m]
 
 
-def draw_error(current: np.ndarray, data: list,
-               wh: int, sc: float, _data_max: float, _data_min: float):
+def reject_outliers_2(data: np.ndarray, m: float = 2.):
     """
-    Draws an "oscilloscope" style graph with the data. Because the graph is
-    active the current "image" needs to be passed so the next one can be
-    generated.
-
-    example:
-    # Draws a graph showing the average and std
-    error_graph, _error_graph_max, error_graph_min = draw_error(
-        current=error_graph,
-        data=[global_avg, global_std],
-        _data_max=_error_graph_max,
-        _data_min=_error_graph_min,
-        wh=win_h,
-        sc=scale
-    )
-
-    @param current: Current image. initialize it as a null array and then
-    update it with the return of this function.
-    @type current: np.ndarray
-    @param data: The data to be plotted. Always pass a list, even with only
-    one element.
-    @type data: list
-    @param wh: The graph window height or the height of the current image.
-    @type wh: int
-    @param sc: A scale factor to apply when the data to be shows is too
-    small. Keep in mind that the data will be rounded and assigned to a row
-    index based on it's value.
-    @type sc: float
-    @param _data_max: Maximum value of the data. Needed for updating the window
-    if the data goes above the window height. This value should be
-    initialized as 0 and updated on every iteration.
-    @type _data_max: float
-    @param _data_min: Minimum value of the data. Needed for updating the window
-    if the data goes below the window height. This value should be
-    initialized as 0 and updated on every iteration.
-    @type _data_min: float
-    @return: The image to be show (cv.imshow), the new data_max and data_min
-    @rtype: np.ndarray, float, float
+    Sets the outliers to 0 on an numpy array. Based on:
+    https://stackoverflow.com/questions/11686720/is-there-a-numpy-builtin-to-reject-outliers-from-a-list
     """
-    COLORS = [
-        (255, 0, 255),
-        (0, 255, 255),
-        (0, 0, 255),
-        (0, 255, 0),
-        (255, 0, 0),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 0),
-    ]
-
-    # Shift the data on the error window
-    _graph = np.roll(current, -1, axis=1)
-
-    if np.max(data) > _data_max:
-        _data_max = np.max(data)
-        _shift = np.ceil(np.abs(_data_max - wh)).astype(np.int)
-        _graph = np.roll(_graph, _shift, axis=0)
-    if np.min(data) < _data_min:
-        _data_min = np.min(data)
-        _shift = np.ceil(np.abs(_data_min - wh)).astype(np.int)
-        _graph = np.roll(_graph, -_shift, axis=0)
-
-    # Sets the last column to zero to store new data
-    _graph[:, -1] = 0
-
-    # Stores new data. The index of the row is proportional to the value of
-    # the data. Color is BGR so: AVG is Pink and STD is Yellow
-    for i, d in enumerate(data):
-        _graph[wh - 1 - np.rint(d * sc).astype(np.int), -1] = COLORS[i]
-
-    return _graph, _data_max, _data_min
-
+    d = np.abs(data - np.median(data))
+    mdev = np.median(d)
+    s = d / (mdev if mdev else 1.)
+    return data[s < m]
 
 # endregion
 
@@ -756,14 +653,30 @@ def draw_error(current: np.ndarray, data: list,
 # ------------------------------------------------------------------------------
 #                                       Main
 # ------------------------------------------------------------------------------
-FULL_CALIB = os.path.join("..", "..", "data",
-                          "CV_D435_20201104_161043_Full_calibration.bag")
-RGB_CALIB = os.path.join("..", "..", "data",
-                         "CV_D435_20201104_160738_RGB_calibration.bag")
-STREAM = os.path.join("..", "..", "data",
-                      "CV_D435_20201104_162148.bag")
 
-path = RGB_CALIB
+path = os.path.join("..", "..", "data",
+                    "CV_D435_20201104_160738_RGB_calibration.bag")
+
+timestamp = "_" + datetime.now().strftime('%Y%m%d_%H%M%S')
+csv_path = os.path.join(f"intrinsics_extrinsics{timestamp}.csv")
+create_csv(csv_path)
+
+# Number of corners required to compute the calibration matrix
+_MIN_CORNERS = 10
+
+
+# Sets the length of the chessboard square
+square_size = 2.5  # Length of the square (2.5)
+units = 0.01  # Units of square_size (cm)
+
+# Distance between left and right IR cameras in meters. Cameras are
+# assumed to be parallel to each other. We are assuming no distortion for
+# all cameras
+baseline = 0.05  # m
+
+# Number of Inner Corners of the chessboard pattern
+chess_rows = 6
+chess_cols = 9
 
 # Creates a Real Sense Pipeline Object
 pipeline = rs.pipeline(ctx=rs.context())
@@ -795,23 +708,11 @@ intrinsics, extrinsics = get_intrinsics_extrinsics(pipeline_rs=pipeline)
 rs_depth_scale = get_depth_scale(pipeline_rs=pipeline)
 print("Depth Scale is [m/px_val]: ", rs_depth_scale)
 
-# Distance between left and right IR cameras in meters. Cameras are
-# assumed to be parallel to each other. We are assuming no distortion for
-# all cameras
-baseline = 0.05  # m
-
-# Number of Inner Corners of the chessboard pattern
-chess_rows = 6
-chess_cols = 9
 # patternSize = (points_per_row, points_per_column)
 chess_size = (chess_rows, chess_cols)
 
 # Stores all corner points that where found on the image
 image_points = []
-
-# Sets the length of the chessboard square
-square_size = 2.5  # Length of the square (2.5)
-units = 0.01  # Units of square_size (cm)
 
 # Creates a list with the real world object(chessboard pattern) coordinates
 obj_point = np.zeros((chess_rows * chess_cols, 3), dtype=np.float32)
@@ -823,9 +724,6 @@ obj_point = obj_point * units
 
 # Used to store all the real world points of the chessboard pattern
 obj_points = []
-
-# Number of corners required to compute the calibration matrix
-_MIN_CORNERS = 10
 
 # Window to show the stream
 cv.namedWindow("Color Stream", cv.WINDOW_AUTOSIZE)
@@ -937,76 +835,60 @@ while True:
                     distCoeffs=None)
 
                 rot_vec = np.array(rot_vec)
-                # FIXME Remove outliers or retain inliers only!
-                """
-                _inliers = get_inliers(rot_vec[:, 0, :], m=2)
-                rotX_avg = np.sum(_inliers) / len(_inliers)
-                _inliers = get_inliers(rot_vec[:, 1, :], m=2)
-                rotY_avg = np.sum(_inliers) / len(_inliers)
-                _inliers = get_inliers(rot_vec[:, 2, :], m=2)
-                rotZ_avg = np.sum(_inliers) / len(_inliers)
                 """
                 rotX_avg = np.sum(rot_vec[:, 0, :]) / _MIN_CORNERS
                 rotY_avg = np.sum(rot_vec[:, 1, :]) / _MIN_CORNERS
                 rotZ_avg = np.sum(rot_vec[:, 2, :]) / _MIN_CORNERS
+                # """
+                _inliers = reject_outliers_2(rot_vec[:, 0, :], m=2)
+                rotX_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = reject_outliers_2(rot_vec[:, 1, :], m=2)
+                rotY_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = reject_outliers_2(rot_vec[:, 2, :], m=2)
+                rotZ_avg = np.sum(_inliers) / len(_inliers)
                 rot_vec_avg = np.vstack((rotX_avg, rotY_avg, rotZ_avg))
                 rot_mat = cv.Rodrigues(rot_vec_avg)[0]
 
                 trans_vec = np.array(trans_vec)
-                # FIXME Remove outliers or retain inliers only!
-                """
-                _inliers = get_inliers(trans_vec[:, 0, :], m=2)
-                transX_avg = np.sum(_inliers) / len(_inliers)
-                _inliers = get_inliers(trans_vec[:, 1, :], m=2)
-                transY_avg = np.sum(_inliers) / len(_inliers)
-                _inliers = get_inliers(trans_vec[:, 2, :], m=2)
-                transZ_avg = np.sum(_inliers) / len(_inliers)
                 """
                 transX_avg = np.sum(trans_vec[:, 0, :]) / _MIN_CORNERS
                 transY_avg = np.sum(trans_vec[:, 1, :]) / _MIN_CORNERS
                 transZ_avg = np.sum(trans_vec[:, 2, :]) / _MIN_CORNERS
+                # """
+                _inliers = reject_outliers_2(trans_vec[:, 0, :], m=2)
+                transX_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = reject_outliers_2(trans_vec[:, 1, :], m=2)
+                transY_avg = np.sum(_inliers) / len(_inliers)
+                _inliers = reject_outliers_2(trans_vec[:, 2, :], m=2)
+                transZ_avg = np.sum(_inliers) / len(_inliers)
                 trans_vec_avg = np.vstack((transX_avg, transY_avg, transZ_avg))
 
                 print("\n----------------------------------------")
                 print("\tIntrinsics Matrix")
                 print(np.round(cam_mat, 2))
-                print("----------------------------------------\n")
-
-                print("\n----------------------------------------")
-                print("\tTranslation Vector")
-                print(np.round(trans_vec_avg, 2))
-                print("----------------------------------------\n")
-
-                print("\n----------------------------------------")
-                print("\tRotation Matrix")
-                print(np.round(rot_mat, 2))
-                print("----------------------------------------\n")
-
-                print("\n----------------------------------------")
+                print("----------------------------------------")
                 print("\tExtrinsic Matrix")
                 print(np.round(np.hstack((trans_vec_avg, rot_mat)), 2))
                 print("----------------------------------------\n")
 
-    """
-    # Computes AVG and STD for quality metrics
-    rs_depth_scaled = rs_depth * rs_depth_scale
-    avg, std, M2 = compute_error(
-        orig=rs_depth_scaled,
-        test=depth,
-        _N=count,
-        _avg=avg,
-        _M2=M2
-    )
+                write2csv(csv_path, cam_mat, rot_mat, trans_vec_avg)
 
-    # Gets average of all pixels
-    global_avg = np.average(avg)
+                mean_error = 0
+                for i in range(len(obj_points)):
+                    imgpoints2, _ = cv.projectPoints(obj_points[i],
+                                                     rot_vec[i],
+                                                     trans_vec[i],
+                                                     cam_mat,
+                                                     dist_coef)
+                    error = cv.norm(image_points[i],
+                                    imgpoints2,
+                                    cv.NORM_L2) / \
+                                    len(imgpoints2)
+                    mean_error += error
 
-    # Gets the std of all pixels
-    global_std = np.average(std)
+                print(mean_error/len(obj_points))
 
-    # Prints the AVG of the absolute difference of all pixels and the STD
-    print(f"AVG: {str(global_avg)};\t-\tSTD: {str(global_std)}")
-    # """
+
 
     # if pressed ESCAPE exit program
     if key == 27:
