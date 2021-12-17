@@ -1,7 +1,9 @@
 # Computer Vision
 ### Introduction
 Work developed by **José Rosa** and **Ricardo Silva** as 2nd Assigment of Computer Vision - MEE - ESTG.
+
 Example Video: [https://youtu.be/qd7n-2v0ltw](https://youtu.be/qd7n-2v0ltw)
+
 English Report: [docs/CV_Assignment2_EN.pdf](docs/CV_Assignment2_EN.pdf)
 
 ### Recomendations
